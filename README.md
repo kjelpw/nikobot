@@ -11,10 +11,10 @@ The !stuff command accesses the imgflip api to create a meme image of the specif
 # Needed Stuff
 `secrets.py` should be a file containing the following variables
 
-#### The username of an imgflip account `username`
-#### The password of an imgflip account `password`
-#### The discord auth token your bot will use `token`
-#### The user id of the bot `bot_id`
+#### The username of an imgflip account: `username`
+#### The password of an imgflip account: `password`
+#### The discord auth token your bot will use: `token`
+#### The user id of the bot: `bot_id`
 
 
 # Adding to the bot
