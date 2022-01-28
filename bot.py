@@ -20,9 +20,8 @@ discord_niko_token = secrets.token
 print(discord.__version__)
 
 class Niko(discord.Client):
-    cmds = ['hi', 'ping', 'help', 'CanthTime', 'NikoMaker', 'mc_ip', 'stuff']
-    descs = ['returns a hello', 'test response time', 'displays helpful messages', 'displays the current date and time in CanthLand', 'Converts the previous or current message into a NikoQuote', 
-            'returns the ip of the mc server', 'tony a message']
+    cmds = ['hi', 'ping', 'help', 'CanthTime', 'NikoMaker', 'stuff']
+    descs = ['returns a hello', 'test response time', 'displays helpful messages', 'displays the current date and time in CanthLand', 'Converts the previous or current message into a NikoQuote', 'tony a message']
     prev_messages = {}
 
     async def on_ready(self):
@@ -30,7 +29,7 @@ class Niko(discord.Client):
 
     async def on_message(self, message):
         if message.author == self.user or message.author == 212783784163016704 or message.author == 172002275412279296 or message.author == 234395307759108106 or message.author == 303730326692429825:
-            #so bot doesn't reply to itself or print its messages
+            #so bot doesn't reply to itself or other bots
             return
         print('Message from {0.author} in {0.channel}: {0.content}'.format(message))
         await self.process_message(message)
@@ -41,17 +40,11 @@ class Niko(discord.Client):
         if message.content.startswith('!'):
             await self.process_command(message)
         # greeting response
-        elif message.content == 'hi <@!640995889854283778>':
+        elif message.content == 'hi <@!' + secrets.bot_id + '>':
             await self.send_message(message.channel, 'hi <@{0.author.id}>'.format(message))
         #save the message and channel it was in if another command follows up
         else:
             self.prev_messages[message.channel] = message.content
-
-        #not command message, save it
-        # else:
-        #     message_file = open('messages.txt', 'a')
-        #     message_file.write(str(message.content))
-        #     message_file.close()
 
     #processes command in the messages
     async def process_command(self, message):
@@ -66,12 +59,8 @@ class Niko(discord.Client):
             await self.canth_time(message)
         elif mess == 'nikomaker':
             await self.niko_maker(message)
-        elif mess == 'mc':
-            await self.mc_ip(message)
         elif mess == 'stuff':
             await self.stuff(message)
-        # else:
-        #     await self.unrecognized_cmd(message)
 
     async def greet(self, message):
         await self.send_message(message.channel, 'Hello World!')
@@ -124,11 +113,6 @@ class Niko(discord.Client):
         #send the image
         await message.channel.send(file=discord.File('nikomessage.png'))
         driver.close()
-
-    async def mc_ip(self, message):
-        if message.guild.id == 221738707621904388:
-            ip = subprocess.run(['dig', '+short', 'myip.opendns.com', '@resolver1.opendns.com'], stdout=subprocess.PIPE).stdout.decode('utf-8')
-            await message.channel.send(ip)
 
     async def stuff(self, message):
         meme_url = ''
