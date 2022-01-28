@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 '''
-Created on Sat Apr 11 12:02:31 2020
+Created Nov 2019
 
 @author: canth
 '''
@@ -12,7 +12,7 @@ from selenium.webdriver import FirefoxOptions
 import wget
 import subprocess
 
-import meme
+from meme import *
 import secrets
 
 discord_niko_token = secrets.token
@@ -21,8 +21,8 @@ print(discord.__version__)
 
 class Niko(discord.Client):
     cmds = ['hi', 'ping', 'help', 'CanthTime', 'NikoMaker', 'mc_ip', 'stuff']
-    descs = ['returns a hello', 'test response time', 'displays helpful messages', 'displays the current date and time in CanthLand', 'Converts the previous message into a NikoQuote. Only works for just sent messages', 
-            'returns the ip of the mc server', 'meme the previous message']
+    descs = ['returns a hello', 'test response time', 'displays helpful messages', 'displays the current date and time in CanthLand', 'Converts the previous or current message into a NikoQuote', 
+            'returns the ip of the mc server', 'tony a message']
     prev_messages = {}
 
     async def on_ready(self):
@@ -55,7 +55,7 @@ class Niko(discord.Client):
 
     #processes command in the messages
     async def process_command(self, message):
-        mess = message.content[1:].split().lower()
+        mess = message.content[1:].split()[0].lower()
         if mess == 'hi':
             await self.greet(message)
         elif mess == 'ping':
@@ -93,6 +93,12 @@ class Niko(discord.Client):
         await self.send_message(message.channel, datetime.datetime.now())
 
     async def niko_maker(self, message):
+        niko_message = ''
+        if len(message.content.split()) > 1:
+            niko_message = message.content[11:]
+        else:
+            niko_message = self.prev_messages.get(message.channel)
+
         #navigate to page
         opts = FirefoxOptions()
         opts.add_argument('--headless')
@@ -107,7 +113,6 @@ class Niko(discord.Client):
         #find and use the textbox
         textbox = driver.find_element_by_id('message')
         textbox.clear()
-        niko_message = self.prev_messages.get(message.channel)
         if niko_message == None:
             niko_message = ''
         textbox.send_keys(niko_message)
@@ -126,8 +131,13 @@ class Niko(discord.Client):
             await message.channel.send(ip)
 
     async def stuff(self, message):
-        print('meme time!!!')
-        
+        meme_url = ''
+
+        if len(message.content.split()) > 1:
+            meme_url = make_meme(message.content[7:])
+        else:
+            meme_url = make_meme(self.prev_messages.get(message.channel))
+        await message.channel.send(meme_url)
 
     async def send_message(self, channel, message):
         await channel.send(message)
