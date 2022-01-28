@@ -2,6 +2,12 @@
 A discord bot using discord.py for use in a private server.
 
 
+# Noteable Things
+The !NikoMaker command uses Selenium to navigate to https://gh.princessrtfm.com/niko.html and create an image with the specified text
+
+The !stuff command accesses the imgflip api to create a meme image of the specified text
+
+
 # Needed Stuff
 `secrets.py` should be a file containing the following variables
 
