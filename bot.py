@@ -6,6 +6,7 @@ Created Nov 2019
 '''
 import datetime
 import discord
+from discord.ext import commands,tasks
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver import FirefoxOptions
@@ -13,119 +14,138 @@ import wget
 import subprocess
 
 from meme import *
-import secrets
+from dotenv import load_dotenv
 
 discord_niko_token = secrets.token
+comm_prefix='!'
+
+cmds = {
+    'hi': 'returns a hello',
+    'ping': 'test response time',
+    'help': 'displays helpful messages',
+    'CanthTime': 'displays the current date and time in CanthLand',
+    'NikoMaker': 'Converts the previous or current message into a NikoQuote',
+    'stuff': 'Tony Stark a message'
+}
+prev_messages = {}
 
 print(discord.__version__)
 
-class Niko(discord.Client):
-    cmds = ['hi', 'ping', 'help', 'CanthTime', 'NikoMaker', 'stuff']
-    descs = ['returns a hello', 'test response time', 'displays helpful messages', 'displays the current date and time in CanthLand', 'Converts the previous or current message into a NikoQuote', 'tony a message']
-    prev_messages = {}
+intents = discord.Intents().all()
+nikobot = commands.Bot(command_prefix=comm_prefix, intents=intents, activity=discord.Game(name='Meow Meow Meow'))
 
-    async def on_ready(self):
-        print('Logged on as {0}!'.format(self.user))
+@nikobot.event
+async def on_ready():
+    print('Logged on as {0}!'.format(secrets.bot_id))
 
-    async def on_message(self, message):
-        if message.author == self.user or message.author == 212783784163016704 or message.author == 172002275412279296 or message.author == 234395307759108106 or message.author == 303730326692429825:
-            #so bot doesn't reply to itself or other bots
-            return
-        print('Message from {0.author} in {0.channel}: {0.content}'.format(message))
-        await self.process_message(message)
+@nikobot.event
+async def on_message(message):
+    if message.author.id == secrets.bot_id or message.author == 212783784163016704 or message.author == 172002275412279296 or message.author == 234395307759108106 or message.author == 303730326692429825:
+        #so bot doesn't reply to itself or other bots
+        return
+    print('Message from {0.author} in {0.channel}: {0.content}'.format(message))
+    if message.content == 'hi <@!' + str(secrets.bot_id) + '>':
+        await message.send('hi <@{0.author.id}>'.format(message))
+    
+    if message.content[:1] != comm_prefix:
+        prev_messages[message.channel] = message.content
 
-    #processes message contents
-    async def process_message(self, message):
-        # command handling
-        if message.content.startswith('!'):
-            await self.process_command(message)
-        # greeting response
-        elif message.content == 'hi <@!' + secrets.bot_id + '>':
-            await self.send_message(message.channel, 'hi <@{0.author.id}>'.format(message))
-        #save the message and channel it was in if another command follows up
-        else:
-            self.prev_messages[message.channel] = message.content
+    await nikobot.process_commands(message)
 
-    #processes command in the messages
-    async def process_command(self, message):
-        mess = message.content[1:].split()[0].lower()
-        if mess == 'hi':
-            await self.greet(message)
-        elif mess == 'ping':
-            await self.ping(message)
-        elif mess == 'help':
-            await self.help(message)
-        elif mess == 'canthtime':
-            await self.canth_time(message)
-        elif mess == 'nikomaker':
-            await self.niko_maker(message)
-        elif mess == 'stuff':
-            await self.stuff(message)
 
-    async def greet(self, message):
-        await self.send_message(message.channel, 'Hello World!')
+# @nikobot.command(name='help', help=)
+# async def HelpCommand(ctx):
+#     embed = discord.Embed(
+#         title='Nikobot Help',
+#         color=discord.Color.dark_red()
+#     )
+#     for key in cmds:
+#         embed.add_field(name=key, value = cmds[key])
+#     await ctx.send(embed)
 
-    async def ping(self, message):
-        await self.send_message(message.channel, 'Pong!')
 
-    async def unrecognized_cmd(self, message):
-        await self.send_message(message.channel, 'Unrecognized Command: use !help')
+@nikobot.command(name='hi', help='returns a hello')
+async def greet(ctx):
+    await ctx.send('Hello World!')
 
-    async def help(self, message):
-        help_mes = "Hey! I'm Niko!\nEvery command must start with !\n+---------------------+\nCommands:\n"
-        for i in range(len(self.cmds)):
-            help_mes += '!' + self.cmds[i] + '\n'
-            help_mes += self.descs[i] + '\n' + '+---------------------+\n'
-        await self.send_message(message.channel, help_mes)
 
-    async def canth_time(self, message):
-        await self.send_message(message.channel, datetime.datetime.now())
+@nikobot.command(name='ping', help='test response time')
+async def ping(ctx):
+    await ctx.send('Pong!')
 
-    async def niko_maker(self, message):
+
+async def unrecognized_cmd(ctx):
+    await ctx.send('Unrecognized Command: use !help')
+
+
+@nikobot.command(name='canthtime', help='displays the current date and time in CanthLand')
+async def canth_time(ctx):
+    await ctx.send(datetime.datetime.now())
+
+
+@nikobot.command(name='nikomaker', help='Converts the previous or current message into a NikoQuote')
+async def niko_maker(ctx, *, arg=''):
+    niko_message = ''
+    if arg != '':
+        niko_message = arg
+    else:
+        niko_message = prev_messages.get(ctx.channel)
+
+    #navigate to page
+    opts = FirefoxOptions()
+    opts.add_argument('--headless')
+    driver = webdriver.Firefox(options=opts)
+    driver.get('https://gh.princessrtfm.com/niko.html')
+    assert 'NikoMaker' in driver.title
+
+    #find and click normal face
+    face = driver.find_element_by_css_selector('.normal')
+    face.click()
+
+    #find and use the textbox
+    textbox = driver.find_element_by_id('message')
+    textbox.clear()
+    if niko_message == None:
         niko_message = ''
-        if len(message.content.split()) > 1:
-            niko_message = message.content[11:]
-        else:
-            niko_message = self.prev_messages.get(message.channel)
+    textbox.send_keys(niko_message)
 
-        #navigate to page
-        opts = FirefoxOptions()
-        opts.add_argument('--headless')
-        driver = webdriver.Firefox(options=opts)
-        driver.get('https://gh.princessrtfm.com/niko.html')
-        assert 'NikoMaker' in driver.title
+    #download the image
+    with open('nikomessage.png', 'wb') as file:
+        file.write(driver.find_element_by_id('render').screenshot_as_png)
 
-        #find and click normal face
-        face = driver.find_element_by_css_selector('.normal')
-        face.click()
-
-        #find and use the textbox
-        textbox = driver.find_element_by_id('message')
-        textbox.clear()
-        if niko_message == None:
-            niko_message = ''
-        textbox.send_keys(niko_message)
-
-        #download the image
-        with open('nikomessage.png', 'wb') as file:
-            file.write(driver.find_element_by_id('render').screenshot_as_png)
-
-        #send the image
-        await message.channel.send(file=discord.File('nikomessage.png'))
-        driver.close()
-
-    async def stuff(self, message):
-        meme_url = ''
-
-        if len(message.content.split()) > 1:
-            meme_url = make_meme(message.content[7:])
-        else:
-            meme_url = make_meme(self.prev_messages.get(message.channel))
-        await message.channel.send(meme_url)
-
-    async def send_message(self, channel, message):
-        await channel.send(message)
+    #send the image
+    await ctx.channel.send(file=discord.File('nikomessage.png'))
+    driver.close()
 
 
-client = Niko()
-client.run(discord_niko_token)
+@nikobot.command(name='stuff', help='Tony Stark a message')
+async def stuff(ctx, *, arg=''):
+    meme_url = ''
+
+    if arg != '':
+        meme_url = make_meme(arg)
+    else:
+        meme_url = make_meme(prev_messages.get(ctx.channel))
+    await ctx.channel.send(meme_url)
+
+
+@nikobot.command(name='join', help='join a voice channel')
+async def join(ctx):
+    if ctx.author.voice:
+        await ctx.author.voice.channel.connect()
+
+
+@nikobot.command(name='leave', help='leave a voice channel')
+async def leave(ctx):
+    voice = ctx.guild.voice_client
+    if voice.is_connected():
+        await voice.disconnect()
+
+
+@nikobot.command()
+async def talk(ctx):
+    await join(ctx)
+
+
+if __name__ == "__main__" :
+    nikobot.run(discord_niko_token)
