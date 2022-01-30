@@ -3,3 +3,4 @@ todo.txt
 geckodriver.log
 nikomessage.png
 __pycache__
+.env
