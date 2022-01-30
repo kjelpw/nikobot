@@ -42,16 +42,26 @@ async def on_ready():
 async def on_message(message):
     if message.author.id == secrets.bot_id or message.author == 212783784163016704 or message.author == 172002275412279296 or message.author == 234395307759108106 or message.author == 303730326692429825:
         #so bot doesn't reply to itself or other bots
-        print('my own message')
         return
     print('Message from {0.author} in {0.channel}: {0.content}'.format(message))
-    if message.content == 'hi <@!' + secrets.bot_id + '>':
+    if message.content == 'hi <@!' + str(secrets.bot_id) + '>':
         await message.send('hi <@{0.author.id}>'.format(message))
     
     if message.content[:1] != comm_prefix:
         prev_messages[message.channel] = message.content
 
     await nikobot.process_commands(message)
+
+
+# @nikobot.command(name='help', help=)
+# async def HelpCommand(ctx):
+#     embed = discord.Embed(
+#         title='Nikobot Help',
+#         color=discord.Color.dark_red()
+#     )
+#     for key in cmds:
+#         embed.add_field(name=key, value = cmds[key])
+#     await ctx.send(embed)
 
 
 @nikobot.command(name='hi', help='returns a hello')
@@ -119,15 +129,23 @@ async def stuff(ctx, *, arg=''):
     await ctx.channel.send(meme_url)
 
 
+@nikobot.command(name='join', help='join a voice channel')
 async def join(ctx):
     if ctx.author.voice:
         await ctx.author.voice.channel.connect()
 
 
+@nikobot.command(name='leave', help='leave a voice channel')
 async def leave(ctx):
     voice = ctx.guild.voice_client
     if voice.is_connected():
         await voice.disconnect()
+
+
+@nikobot.command()
+async def talk(ctx):
+    await join(ctx)
+
 
 if __name__ == "__main__" :
     nikobot.run(discord_niko_token)
