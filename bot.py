@@ -4,6 +4,7 @@ Created Nov 2019
 
 @author: canth
 '''
+import logging
 import datetime
 import discord
 from discord.ext import commands,tasks
@@ -18,6 +19,12 @@ from dotenv import load_dotenv
 
 discord_niko_token = secrets.token
 comm_prefix='!'
+logger = logging.getLogger('discord')
+logger.setLevel(logging.INFO)
+handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
+handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
+logger.addHandler(handler)
+#logging.basicConfig(level=logging.WARNING)
 
 cmds = {
     'hi': 'returns a hello',
@@ -116,6 +123,18 @@ async def niko_maker(ctx, *, arg=''):
     #send the image
     await ctx.channel.send(file=discord.File('nikomessage.png'))
     driver.close()
+
+
+@nikobot.command(name='stuffd', help='Tony Stark a message and delete')
+async def stuffd(ctx, *, arg=''):
+    meme_url = ''
+
+    if arg != '':
+        meme_url = make_meme(arg)
+    else:
+        meme_url = 'No text specified'
+    await ctx.channel.send(meme_url)
+    await ctx.message.delete()
 
 
 @nikobot.command(name='stuff', help='Tony Stark a message')
