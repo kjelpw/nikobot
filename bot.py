@@ -13,6 +13,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver import FirefoxOptions
 import wget
 import subprocess
+import numpy as np
 
 from meme import *
 from dotenv import load_dotenv
@@ -130,9 +131,9 @@ async def stuffd(ctx, *, arg=''):
     meme_url = ''
 
     if arg != '':
-        meme_url = make_meme(arg)
+        meme_url = make_meme_stuff(arg)
     else:
-        meme_url = 'No text specified'
+        meme_url = make_meme_stuff(prev_messages.get(ctx.channel))
     await ctx.channel.send(meme_url)
     await ctx.message.delete()
 
@@ -142,9 +143,32 @@ async def stuff(ctx, *, arg=''):
     meme_url = ''
 
     if arg != '':
-        meme_url = make_meme(arg)
+        meme_url = make_meme_stuff(arg)
     else:
-        meme_url = make_meme(prev_messages.get(ctx.channel))
+        meme_url = make_meme_stuff(prev_messages.get(ctx.channel))
+    await ctx.channel.send(meme_url)
+
+
+@nikobot.command(name='aidnad', help='it\'s him')
+async def aidnad(ctx, *, arg=''):
+    meme_url = ''
+
+    if arg != '':
+        meme_url = make_meme_aidna(arg)
+    else:
+        meme_url = make_meme_aidna(prev_messages.get(ctx.channel))
+    await ctx.channel.send(meme_url)
+    await ctx.message.delete()
+
+
+@nikobot.command(name='aidna', help='he is here')
+async def aidna(ctx, *, arg=''):
+    meme_url = ''
+
+    if arg != '':
+        meme_url = make_meme_aidna(arg)
+    else:
+        meme_url = make_meme_aidna(prev_messages.get(ctx.channel))
     await ctx.channel.send(meme_url)
 
 
@@ -161,9 +185,21 @@ async def leave(ctx):
         await voice.disconnect()
 
 
-@nikobot.command()
+#@nikobot.command()
 async def talk(ctx):
     await join(ctx)
+
+
+# @nikobot.command(name='log', help='does literally nothing ;)')
+# async def log(ctx, num=1, name='214605185765343232'):
+#     #delete the call so Ashyan doesn't spam it
+#     await ctx.message.delete()
+
+#     messages = await ctx.channel.history(limit=num).flatten()
+#     print(type(messages))
+#     messages = np.asarray(messages)
+
+#     np.save('mess', messages)
 
 
 if __name__ == "__main__" :

@@ -5,3 +5,5 @@ nikomessage.png
 __pycache__
 .env
 discord.log
+mess.npy
+mess.txt
