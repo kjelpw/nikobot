@@ -40,7 +40,7 @@ prev_messages = {}
 print(discord.__version__)
 
 intents = discord.Intents().all()
-nikobot = commands.Bot(command_prefix=comm_prefix, intents=intents, activity=discord.Game(name='Meow Meow Meow'))
+nikobot = commands.Bot(command_prefix=comm_prefix, intents=intents, activity=discord.Activity(type=discord.ActivityType.watching, name='YOU'))
 
 @nikobot.event
 async def on_ready():
@@ -201,6 +201,11 @@ async def talk(ctx):
 
 #     np.save('mess', messages)
 
+@nikobot.event
+async def on_member_update(before, after):
+    if after.activity != None:
+        if len(after.activities) > 1:
+            print(after.name + " is playing " + after.activities[1].name)
 
 if __name__ == "__main__" :
     nikobot.run(discord_niko_token)
