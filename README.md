@@ -15,12 +15,21 @@ The !stuff command accesses the imgflip api to create a meme image of the specif
 #### The password of an imgflip account: `password`
 #### The discord auth token your bot will use: `token`
 #### The user id of the bot: `bot_id`
+#### The guild id where the server command may be used: `guild_permission`
+#### The list of bot ids in the server, so we can avoid responding to them: `bots_id`
 
 
 # Adding to the bot
-To add a command to the bot you need to do four things
+To add a command to the bot
 
-1. Add the command name to the cmds array
-2. Add a description of the command to the descs array
-3. Add the command to the process_command function
-4. Write a function that is called to execute your command
+1. Create a function that describes implements your command
+2. Add a decorator to your function nikobot.command
+3. In the decorator specify the actual command that will be called by setting name
+4. Optionally, specify the help text by setting help
+
+# TODO
+- [ ] Some sort of web interface to control and monitor the bot, possibly using Flask?
+- [ ] Play saved sounds clips like a soundboard (Unoriginal, but good for learning how to transmit audio)
+- [ ] Save user activity over bot restarts
+- [ ] Using past messages, train a ml model to speak like a server member 
+- [ ] Solve world hunger
