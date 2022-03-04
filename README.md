@@ -30,6 +30,9 @@ To add a command to the bot
 # TODO
 - [ ] Some sort of web interface to control and monitor the bot, possibly using Flask?
 - [ ] Play saved sounds clips like a soundboard (Unoriginal, but good for learning how to transmit audio)
+- [ ] Receive audio
+- [ ] Speach jammer
+- [ ] Command to save audio over the past few minutes, specified by a command argument?
 - [ ] Save user activity over bot restarts
 - [ ] Using past messages, train a ml model to speak like a server member 
 - [ ] Solve world hunger
