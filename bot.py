@@ -87,7 +87,7 @@ async def niko_maker(ctx, *, arg=''):
         niko_message = arg
     else:
         niko_message = prev_messages.get(ctx.channel)
-    niko_browser(ctx, niko_message)
+    await niko_browser(ctx, niko_message)
 
 
 @nikobot.command(name='nikomakerd', help='Converts the previous or current message into a NikoQuote, deletes command')
@@ -97,7 +97,7 @@ async def niko_maker(ctx, *, arg=''):
         niko_message = arg
     else:
         niko_message = prev_messages.get(ctx.channel)
-    niko_browser(ctx, niko_message)
+    await niko_browser(ctx, niko_message)
     await ctx.message.delete()
 
 
