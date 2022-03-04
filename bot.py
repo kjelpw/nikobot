@@ -8,15 +8,14 @@ import logging
 import datetime
 import discord
 from discord.ext import commands,tasks
-from selenium import webdriver
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver import FirefoxOptions
 import wget
 import subprocess
 import numpy as np
 
 from meme import *
 from dotenv import load_dotenv
+
+from nikomaker import niko_browser
 
 discord_niko_token = secrets.token
 comm_prefix='!'
@@ -27,20 +26,10 @@ handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(me
 logger.addHandler(handler)
 #logging.basicConfig(level=logging.WARNING)
 
-cmds = {
-    'hi': 'returns a hello',
-    'ping': 'test response time',
-    'help': 'displays helpful messages',
-    'CanthTime': 'displays the current date and time in CanthLand',
-    'NikoMaker': 'Converts the previous or current message into a NikoQuote',
-    'stuff': 'Tony Stark a message'
-}
 prev_messages = {}
 
-print(discord.__version__)
-
 intents = discord.Intents().all()
-nikobot = commands.Bot(command_prefix=comm_prefix, intents=intents, activity=discord.Game(name='Meow Meow Meow'))
+nikobot = commands.Bot(command_prefix=comm_prefix, intents=intents, activity=discord.Activity(type=discord.ActivityType.watching, name='YOU'))
 
 @nikobot.event
 async def on_ready():
@@ -48,7 +37,7 @@ async def on_ready():
 
 @nikobot.event
 async def on_message(message):
-    if message.author.id == secrets.bot_id or message.author == 212783784163016704 or message.author == 172002275412279296 or message.author == 234395307759108106 or message.author == 303730326692429825:
+    if message.author.id == secrets.bot_id or message.author in secrets.bots_id:
         #so bot doesn't reply to itself or other bots
         return
     print('Message from {0.author} in {0.channel}: {0.content}'.format(message))
@@ -98,32 +87,18 @@ async def niko_maker(ctx, *, arg=''):
         niko_message = arg
     else:
         niko_message = prev_messages.get(ctx.channel)
+    niko_browser(ctx, niko_message)
 
-    #navigate to page
-    opts = FirefoxOptions()
-    opts.add_argument('--headless')
-    driver = webdriver.Firefox(options=opts)
-    driver.get('https://gh.princessrtfm.com/niko.html')
-    assert 'NikoMaker' in driver.title
 
-    #find and click normal face
-    face = driver.find_element_by_css_selector('.normal')
-    face.click()
-
-    #find and use the textbox
-    textbox = driver.find_element_by_id('message')
-    textbox.clear()
-    if niko_message == None:
-        niko_message = ''
-    textbox.send_keys(niko_message)
-
-    #download the image
-    with open('nikomessage.png', 'wb') as file:
-        file.write(driver.find_element_by_id('render').screenshot_as_png)
-
-    #send the image
-    await ctx.channel.send(file=discord.File('nikomessage.png'))
-    driver.close()
+@nikobot.command(name='nikomakerd', help='Converts the previous or current message into a NikoQuote, deletes command')
+async def niko_maker(ctx, *, arg=''):
+    niko_message = ''
+    if arg != '':
+        niko_message = arg
+    else:
+        niko_message = prev_messages.get(ctx.channel)
+    niko_browser(ctx, niko_message)
+    await ctx.message.delete()
 
 
 @nikobot.command(name='stuffd', help='Tony Stark a message and delete')
@@ -202,5 +177,22 @@ async def talk(ctx):
 #     np.save('mess', messages)
 
 
+@nikobot.event
+async def on_member_update(before, after):
+    if after.activity != None:
+        if len(after.activities) > 1:
+            print(after.name + " is playing " + after.activities[1].name)
+
+
+@nikobot.command(name='server', help='ip of the server')
+async def server(ctx):
+    if ctx.guild.id == secrets.guild_permission:
+        ip = subprocess.run(['dig', '+short', 'myip.opendns.com', '@resolver1.opendns.com'], stdout=subprocess.PIPE).stdout.decode('utf-8')
+        await ctx.channel.send(ip)
+    else:
+        await ctx.channel.send("Command does not work in this server")
+
+
 if __name__ == "__main__" :
+    print(discord.__version__)
     nikobot.run(discord_niko_token)
