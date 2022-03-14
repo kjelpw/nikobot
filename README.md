@@ -36,4 +36,5 @@ To add a command to the bot
 - [ ] Save user activity over bot restarts
 - [ ] Using past messages, train a ml model to speak like a server member 
 - [ ] A command named "snipe", which outputs the most recent message
+- [ ] Be able to start up game servers and get status of running servers
 - [ ] Solve world hunger
