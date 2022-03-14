@@ -11,11 +11,10 @@ from discord.ext import commands,tasks
 import wget
 import subprocess
 import numpy as np
-
-from meme import *
 from dotenv import load_dotenv
-
+from meme import *
 from nikomaker import niko_browser
+
 
 discord_niko_token = secrets.token
 comm_prefix='!'
@@ -41,6 +40,8 @@ async def on_message(message):
         #so bot doesn't reply to itself or other bots
         return
     print('Message from {0.author} in {0.channel}: {0.content}'.format(message))
+    with open('log.txt', 'a') as f:
+        f.write('Message from {0.author} in {0.channel}: {0.content}'.format(message) + '\n')
     if message.content == 'hi <@!' + str(secrets.bot_id) + '>':
         await message.send('hi <@{0.author.id}>'.format(message))
     
@@ -177,7 +178,7 @@ async def talk(ctx):
 #     np.save('mess', messages)
 
 
-@nikobot.event
+#@nikobot.event
 async def on_member_update(before, after):
     if after.activity != None:
         if len(after.activities) > 1:
