@@ -194,6 +194,15 @@ async def server(ctx):
         await ctx.channel.send("Command does not work in this server")
 
 
+@nikobot.command(name='snipe', help='sends the last message')
+async def snipe(ctx):
+    if ctx.channel in prev_messages:
+        embed = discord.Embed(title='Previous Message', description=prev_messages.get(ctx.channel), color=discord.Color.dark_red())
+        await ctx.channel.send(embed=embed)
+    else:
+        await ctx.channel.send('No previous message exists!')
+
+
 if __name__ == "__main__" :
     print(discord.__version__)
     nikobot.run(discord_niko_token)

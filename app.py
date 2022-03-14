@@ -9,7 +9,6 @@ def hello_world():
 
 @app.route('/log')
 def log():
-    print('accessing log')
     fname = 'log.txt'
     N = 4
     bufsize = 8192
@@ -22,7 +21,6 @@ def log():
     # opening file using with() method
     # so that file get closed
     # after completing work
-    print('open file')
     with open(fname) as f:
         if bufsize > fsize:
             
@@ -37,7 +35,6 @@ def log():
             
             # while loop to
             # fetch last N lines
-            print('looping')
             while True:
                 iter += 1
                 
@@ -50,7 +47,6 @@ def log():
                 # in list upto
                 # end of file
                 lines = f.read
-                print('for lines')
                 for line in f.readlines():
                     fetched_lines.append('<p>' + str(line) + '</p>')
                 
@@ -59,9 +55,7 @@ def log():
                 # is equal or greater to
                 # the number of lines requested or
                 # when we reach end of file
-                print(len(fetched_lines))
                 if len(fetched_lines) >= N or f.tell() == 0:
-                    print('returning')
                     return ''.join(fetched_lines[-N:])
 
 if __name__ == '__main__' :
