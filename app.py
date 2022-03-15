@@ -9,21 +9,24 @@ def hello_world():
 
 @app.route('/log')
 def log():
+    
     fname = 'log.txt'
     N = 4
-    bufsize = 8192
+    bufsize = 200000
     # calculating size of
     # file in bytes
     fsize = os.stat(fname).st_size
-
+    
     iter = 0
-     
+    
+    print('fsize is: ' + str(fsize) + ' bufsize is: ' + str(bufsize))
+    print('if result should be: ' + str(bufsize > fsize))
     # opening file using with() method
     # so that file get closed
     # after completing work
     with open(fname) as f:
+        print('file opened')
         if bufsize > fsize:
-            
             # adjusting buffer size
             # according to size
             # of file
@@ -56,7 +59,11 @@ def log():
                 # the number of lines requested or
                 # when we reach end of file
                 if len(fetched_lines) >= N or f.tell() == 0:
-                    return ''.join(fetched_lines[-N:])
-
+                    page = ''.join(fetched_lines[-N:])
+                    print(type(page))
+                    return page
+        else:
+            print('bufsize smaller than fsize')
+            return
 if __name__ == '__main__' :
     app.run(host='0.0.0.0')
