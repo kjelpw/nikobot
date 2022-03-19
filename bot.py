@@ -46,7 +46,7 @@ async def on_message(message):
         await message.send('hi <@{0.author.id}>'.format(message))
     
     if message.content[:1] != comm_prefix:
-        prev_messages[message.channel] = message.content
+        prev_messages[message.channel] = [message.content, str(message.author)]
 
     await nikobot.process_commands(message)
 
@@ -87,7 +87,7 @@ async def niko_maker(ctx, *, arg=''):
     if arg != '':
         niko_message = arg
     else:
-        niko_message = prev_messages.get(ctx.channel)
+        niko_message = prev_messages.get(ctx.channel)[0]
     await niko_browser(ctx, niko_message)
 
 
@@ -97,7 +97,7 @@ async def niko_maker(ctx, *, arg=''):
     if arg != '':
         niko_message = arg
     else:
-        niko_message = prev_messages.get(ctx.channel)
+        niko_message = prev_messages.get(ctx.channel)[0]
     await niko_browser(ctx, niko_message)
     await ctx.message.delete()
 
@@ -109,7 +109,7 @@ async def stuffd(ctx, *, arg=''):
     if arg != '':
         meme_url = make_meme_stuff(arg)
     else:
-        meme_url = make_meme_stuff(prev_messages.get(ctx.channel))
+        meme_url = make_meme_stuff(prev_messages.get(ctx.channel)[0])
     await ctx.channel.send(meme_url)
     await ctx.message.delete()
 
@@ -121,7 +121,7 @@ async def stuff(ctx, *, arg=''):
     if arg != '':
         meme_url = make_meme_stuff(arg)
     else:
-        meme_url = make_meme_stuff(prev_messages.get(ctx.channel))
+        meme_url = make_meme_stuff(prev_messages.get(ctx.channel)[0])
     await ctx.channel.send(meme_url)
 
 
@@ -132,7 +132,7 @@ async def aidnad(ctx, *, arg=''):
     if arg != '':
         meme_url = make_meme_aidna(arg)
     else:
-        meme_url = make_meme_aidna(prev_messages.get(ctx.channel))
+        meme_url = make_meme_aidna(prev_messages.get(ctx.channel)[0])
     await ctx.channel.send(meme_url)
     await ctx.message.delete()
 
@@ -144,7 +144,7 @@ async def aidna(ctx, *, arg=''):
     if arg != '':
         meme_url = make_meme_aidna(arg)
     else:
-        meme_url = make_meme_aidna(prev_messages.get(ctx.channel))
+        meme_url = make_meme_aidna(prev_messages.get(ctx.channel)[0])
     await ctx.channel.send(meme_url)
 
 
@@ -197,7 +197,8 @@ async def server(ctx):
 @nikobot.command(name='snipe', help='sends the last message')
 async def snipe(ctx):
     if ctx.channel in prev_messages:
-        embed = discord.Embed(title='Previous Message', description=prev_messages.get(ctx.channel), color=discord.Color.dark_red())
+        description = str(prev_messages.get(ctx.channel)[1] + ': ' + prev_messages.get(ctx.channel)[0])
+        embed = discord.Embed(title='Previous Message', description=description, color=discord.Color.dark_red())
         await ctx.channel.send(embed=embed)
     else:
         await ctx.channel.send('No previous message exists!')
