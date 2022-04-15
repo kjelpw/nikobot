@@ -8,12 +8,11 @@ import logging
 import datetime
 import discord
 from discord.ext import commands,tasks
-import wget
 import subprocess
 import numpy as np
-from dotenv import load_dotenv
 from meme import *
 from nikomaker import niko_browser
+from server_status import server_process, server_list
 
 
 discord_niko_token = secrets.token
@@ -154,7 +153,7 @@ async def join(ctx):
         await ctx.author.voice.channel.connect()
 
 
-@nikobot.command(name='leave', help='leave a voice channel')
+#@nikobot.command(name='leave', help='leave a voice channel')
 async def leave(ctx):
     voice = ctx.guild.voice_client
     if voice.is_connected():
@@ -185,11 +184,15 @@ async def on_member_update(before, after):
             print(after.name + " is playing " + after.activities[1].name)
 
 
-@nikobot.command(name='server', help='ip of the server')
-async def server(ctx):
+@nikobot.command(name='server', help='See server status, start a server, get server ip')
+async def server(ctx, *, arg=''):
     if ctx.guild.id == secrets.guild_permission:
-        ip = subprocess.run(['dig', '+short', 'myip.opendns.com', '@resolver1.opendns.com'], stdout=subprocess.PIPE).stdout.decode('utf-8')
-        await ctx.channel.send(ip)
+        if arg != '':
+            response = server_process(arg)
+            await ctx.channel.send(embed=response)
+        else:
+            response = server_list()
+            await ctx.channel.send(embed=response)
     else:
         await ctx.channel.send("Command does not work in this server")
 
