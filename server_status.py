@@ -1,6 +1,8 @@
 from pydoc import describe
 import subprocess
 import discord
+import socket
+import pickle
 #https://python.plainenglish.io/send-an-embed-with-a-discord-bot-in-python-61d34c711046
 def server_process(arg):
     arg = arg.split()
@@ -12,9 +14,9 @@ def server_process(arg):
             game_name = arg[1]
             return start(game_name)              
         else:
-            return 'Command not found'
+            return discord.Embed(title='Response', description='Command not Found')
     else:
-        return 'Need more command args (see help)'
+        return discord.Embed(title='Response', description='Need to specify args')
 
 def status(game_name):
     status = ''
@@ -22,10 +24,10 @@ def status(game_name):
         status = subprocess.run(['systemctl', 'status', 'factorio.service'], stdout=subprocess.PIPE).stdout.decode('utf-8')
     elif game_name == 'minecraft':
         status = subprocess.run(['systemctl', 'status', 'minecraft.service'], stdout=subprocess.PIPE).stdout.decode('utf-8')
-    if 'active' in status:
-        return server_on(game_name)
-    else:
+    if 'inactive' in status or 'failed' in status:
         return server_off(game_name)
+    else:
+        return server_on(game_name)
 
 def server_on(game_name):
     description = 'Status of the ' + game_name + ' server'
@@ -58,3 +60,33 @@ def server_list():
     game_list = 'factorio\n'
     embed.add_field(name='Servers: ', value=game_list)
     return embed
+
+if __name__ == "__main__":
+    print('starting server manager')
+    host = socket.gethostname()
+    port = 6969
+
+    #close an old socket if it exists
+    s = socket.socket()
+    s.close()
+
+    s = socket.socket()
+    s.bind((host, port))
+    s.listen(1)
+    print('Server manager started')
+    client_socket, address = s.accept()
+    print("Connection from: " + str(address))
+    while True:
+        data = client_socket.recv(1024).decode('utf-8')
+        if not data:
+            break
+        print('From connection: ' + data)
+        if 'server_process' in data:
+            # pass the arg on
+            response = server_process(data.partition(' ')[2])
+            client_socket.send(pickle.dumps(response))
+        elif 'server_list' in data:
+            response = server_list()
+            client_socket.send(pickle.dumps(response))
+
+    client_socket.close()

@@ -6,13 +6,14 @@ Created Nov 2019
 '''
 import logging
 import datetime
+import pickle
 import discord
 from discord.ext import commands,tasks
+import socket
 import subprocess
 import numpy as np
 from meme import *
 from nikomaker import niko_browser
-from server_status import server_process, server_list
 
 
 discord_niko_token = secrets.token
@@ -188,10 +189,12 @@ async def on_member_update(before, after):
 async def server(ctx, *, arg=''):
     if ctx.guild.id == secrets.guild_permission:
         if arg != '':
-            response = server_process(arg)
+            s.send(('server_process ' + arg).encode('utf-8'))
+            response = pickle.loads(s.recv(1024))
             await ctx.channel.send(embed=response)
         else:
-            response = server_list()
+            s.send(('server_list').encode('utf-8'))
+            response = pickle.loads(s.recv(1024))
             await ctx.channel.send(embed=response)
     else:
         await ctx.channel.send("Command does not work in this server")
@@ -209,4 +212,10 @@ async def snipe(ctx):
 
 if __name__ == "__main__" :
     print(discord.__version__)
+    host = socket.gethostname()
+    port = 6969
+    
+    s = socket.socket()
+    s.connect((host, port))
+
     nikobot.run(discord_niko_token)
