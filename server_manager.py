@@ -4,6 +4,13 @@ import discord
 import socket
 import pickle
 #https://python.plainenglish.io/send-an-embed-with-a-discord-bot-in-python-61d34c711046
+
+games = {
+    'factorio': 'factorio.service',
+    'minecraft': 'minecraft.service',
+    'valheim': 'valheim.service'
+}
+
 def server_process(arg):
     arg = arg.split()
     if len(arg) > 1:
@@ -20,10 +27,8 @@ def server_process(arg):
 
 def status(game_name):
     status = ''
-    if game_name == 'factorio':
-        status = subprocess.run(['systemctl', 'status', 'factorio.service'], stdout=subprocess.PIPE).stdout.decode('utf-8')
-    elif game_name == 'minecraft':
-        status = subprocess.run(['systemctl', 'status', 'minecraft.service'], stdout=subprocess.PIPE).stdout.decode('utf-8')
+    status = subprocess.run(['systemctl', 'status', games[game_name]], stdout=subprocess.PIPE).stdout.decode('utf-8')
+
     if 'inactive' in status or 'failed' in status:
         return server_off(game_name)
     else:
@@ -45,10 +50,7 @@ def server_off(game_name):
     return embed
 
 def start(game_name):
-    if game_name == 'factorio':
-        subprocess.run(['systemctl', 'start', 'factorio.service'], stdout=subprocess.PIPE)
-    elif game_name == 'minecraft':
-        subprocess.run(['systemctl', 'start', 'minecraft.service'], stdout=subprocess.PIPE)
+    subprocess.run(['systemctl', 'start', games[game_name]], stdout=subprocess.PIPE)
     return status(game_name)
 
 # Returns the ip of the server
@@ -57,7 +59,10 @@ def ip():
 
 def server_list():
     embed = discord.Embed(title='List of available servers', description='Get a server\'s status using \"!server status [name]\"', color=discord.Color.green())
-    game_list = 'factorio\n'
+    
+    game_list = ''
+    for game_name in games:
+        game_list += (game_name + ' \n')
     embed.add_field(name='Servers: ', value=game_list)
     return embed
 

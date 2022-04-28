@@ -37,5 +37,6 @@ To add a command to the bot
 - [ ] Using past messages, train a ml model to speak like a server member 
 - [X] A command named "snipe", which outputs the most recent message
 - [X] Be able to start up game servers and get status of running servers
-- [X] Microservice things 
+- [X] Microservice things
+- [ ] Server manager can automatically turn off servers if need be 
 - [ ] Solve world hunger
