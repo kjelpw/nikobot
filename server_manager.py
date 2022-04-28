@@ -6,9 +6,9 @@ import pickle
 #https://python.plainenglish.io/send-an-embed-with-a-discord-bot-in-python-61d34c711046
 
 games = {
-    'factorio': 'factorio.service',
-    'minecraft': 'minecraft.service',
-    'valheim': 'valheim.service'
+    'factorio': ['factorio.service', False],
+    'minecraft': ['minecraft.service', False],
+    'valheim': ['valheim.service', False]
 }
 
 def server_process(arg):
@@ -16,7 +16,7 @@ def server_process(arg):
     if len(arg) > 1:
         if arg[0] == 'status':
             game_name = arg[1]
-            return status(game_name)
+            return server_status(game_name)
         if arg[0] == 'start':
             game_name = arg[1]
             return start(game_name)              
@@ -25,14 +25,16 @@ def server_process(arg):
     else:
         return discord.Embed(title='Response', description='Need to specify args')
 
-def status(game_name):
+def server_status(game_name):
     status = ''
-    status = subprocess.run(['systemctl', 'status', games[game_name]], stdout=subprocess.PIPE).stdout.decode('utf-8')
+    status = subprocess.run(['systemctl', 'is-active', games[game_name][0]], stdout=subprocess.PIPE).stdout.decode('utf-8')
 
-    if 'inactive' in status or 'failed' in status:
+    if 'inactive' in status:
         return server_off(game_name)
-    else:
+    elif 'active' in status:
         return server_on(game_name)
+    else:
+        return server_off(game_name)
 
 def server_on(game_name):
     description = 'Status of the ' + game_name + ' server'
@@ -50,8 +52,20 @@ def server_off(game_name):
     return embed
 
 def start(game_name):
-    subprocess.run(['systemctl', 'start', games[game_name]], stdout=subprocess.PIPE)
-    return status(game_name)
+    if not games[game_name][1]:
+        #first, stop other game servers
+        stop_others(game_name)
+        #now start the requested server
+        print('Starting: ' + game_name)
+        subprocess.run(['systemctl', 'start', games[game_name][0]], stdout=subprocess.PIPE)
+    return server_status(game_name)
+
+#stop all other game servers
+def stop_others(game_name):
+    for key, value in games.items():
+        if not key == game_name:
+            print('Stopping: ' + key)
+            subprocess.run(['systemctl', 'stop', games[key][0]], stdout=subprocess.PIPE)
 
 # Returns the ip of the server
 def ip():
@@ -79,6 +93,18 @@ if __name__ == "__main__":
     s.bind((host, port))
     s.listen(1)
     print('Server manager started')
+
+
+    # get server status
+    for key, value in games.items():
+        status = subprocess.run(['systemctl', 'is-active', value[0]], stdout=subprocess.PIPE).stdout.decode('utf-8')
+        if 'inactive' in status or 'failed' or 'could not be found' in status:
+            games[key][1] = False
+        else:
+            games[key][1] = True
+        
+
+
     client_socket, address = s.accept()
     print("Connection from: " + str(address))
     while True:
