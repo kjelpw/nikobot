@@ -38,5 +38,5 @@ To add a command to the bot
 - [X] A command named "snipe", which outputs the most recent message
 - [X] Be able to start up game servers and get status of running servers
 - [X] Microservice things
-- [ ] Server manager can automatically turn off servers if need be 
+- [X] Server manager can automatically turn off servers if need be 
 - [ ] Solve world hunger
