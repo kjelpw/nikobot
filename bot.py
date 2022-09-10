@@ -6,6 +6,7 @@ Created Nov 2019
 '''
 import logging
 import datetime
+import os
 import pickle
 import discord
 from discord.ext import commands,tasks
@@ -14,6 +15,7 @@ import subprocess
 import numpy as np
 from meme import *
 from nikomaker import niko_browser
+from dream import dream
 
 
 discord_niko_token = secrets.token
@@ -209,6 +211,17 @@ async def snipe(ctx):
     else:
         await ctx.channel.send('No previous message exists!')
 
+@nikobot.command(name='dream', help='runs stable diffusion on a prompt')
+async def dreamd(ctx, *, arg=''):
+    prompt = ''
+    if arg != '':
+        prompt = arg
+        filename = dream(prompt)
+        await ctx.channel.send(file=discord.File(filename))
+        os.remove(filename)
+    else:
+        await ctx.channel.send("Please add a prompt after !dream.")
+    # Sends file from the api to the channel
 
 if __name__ == "__main__" :
     print(discord.__version__)

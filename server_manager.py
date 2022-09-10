@@ -30,16 +30,16 @@ class ServerManager():
         print('processing')
         arg = arg.split()
         if len(arg) > 1:
-            if arg[0] == 'status':
-                game_name = arg[1]
-                return self.server_status(game_name)
-            if arg[0] == 'start':
-                game_name = arg[1]
-                return self.start(game_name)              
-            else:
-                return discord.Embed(title='Response', description='Command not Found')
-        else:
-            return discord.Embed(title='Response', description='Need to specify args')
+            if arg[1] in self.games:
+                if arg[0] == 'status':
+                    game_name = arg[1]
+                    return self.server_status(game_name)
+                if arg[0] == 'start':
+                    game_name = arg[1]
+                    return self.start(game_name)              
+                else:
+                    return discord.Embed(title='Response', description='Command not Found')
+        return discord.Embed(title='Response', description='Need to specify args')
 
     def server_status(self, game_name):
         status = ''
