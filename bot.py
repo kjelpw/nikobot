@@ -14,6 +14,7 @@ import subprocess
 import numpy as np
 from meme import *
 from nikomaker import niko_browser
+from dream import dream
 
 
 discord_niko_token = secrets.token
@@ -208,6 +209,16 @@ async def snipe(ctx):
         await ctx.channel.send(embed=embed)
     else:
         await ctx.channel.send('No previous message exists!')
+
+@nikobot.command(name='dream', help='runs stable diffusion on a prompt')
+async def dream(ctx, *, arg=''):
+    prompt = ''
+    if arg != '':
+        prompt = arg
+    else:
+        await ctx.channel.send("Please add a prompt after !dream.")
+    await 
+
 
 
 if __name__ == "__main__" :
