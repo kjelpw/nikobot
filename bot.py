@@ -211,7 +211,7 @@ async def snipe(ctx):
     else:
         await ctx.channel.send('No previous message exists!')
 
-@nikobot.command(name='dream', help='runs stable diffusion on a prompt')
+@nikobot.command(name='dream', help='generate an image')
 async def dreamd(ctx, *, arg=''):
     prompt = ''
     if arg != '':
