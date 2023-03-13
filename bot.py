@@ -229,6 +229,6 @@ if __name__ == "__main__" :
     port = 6969
     
     s = socket.socket()
-    s.connect((host, port))
+    # s.connect((host, port))
 
     nikobot.run(discord_niko_token)
