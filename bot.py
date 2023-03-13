@@ -16,6 +16,8 @@ import numpy as np
 from meme import *
 from nikomaker import niko_browser
 from dream import dream
+import asyncio
+import queue
 
 
 discord_niko_token = secrets.token
@@ -211,17 +213,41 @@ async def snipe(ctx):
     else:
         await ctx.channel.send('No previous message exists!')
 
+# @nikobot.command(name='dream', help='generate an image')
+# async def dreamd(ctx, *, arg=''):
+#     prompt = ''
+#     if arg != '':
+#         prompt = arg
+#         filename = dream(prompt)
+#         await ctx.channel.send(file=discord.File(filename))
+#         os.remove(filename)
+#     else:
+#         await ctx.channel.send("Please add a prompt after !dream.")
+#     # Sends file from the api to the channel
+
+queue = asyncio.Queue()
+
 @nikobot.command(name='dream', help='generate an image')
 async def dreamd(ctx, *, arg=''):
     prompt = ''
     if arg != '':
         prompt = arg
-        filename = dream(prompt)
-        await ctx.channel.send(file=discord.File(filename))
-        os.remove(filename)
+        await queue.put((ctx, prompt))
     else:
         await ctx.channel.send("Please add a prompt after !dream.")
-    # Sends file from the api to the channel
+
+async def dream_worker():
+    while True:
+        ctx, prompt = await queue.get()
+        try:
+            filename = dream(prompt)
+            await ctx.channel.send(file=discord.File(filename))
+            os.remove(filename)
+        except Exception as e:
+            await ctx.channel.send(f"Error generating image: {str(e)}")
+        finally:
+            queue.task_done()
+
 
 if __name__ == "__main__" :
     print(discord.__version__)
@@ -231,4 +257,5 @@ if __name__ == "__main__" :
     s = socket.socket()
     s.connect((host, port))
 
+    nikobot.loop.create_task(dream_worker())
     nikobot.run(discord_niko_token)
