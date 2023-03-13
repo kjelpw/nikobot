@@ -225,6 +225,25 @@ async def snipe(ctx):
 #         await ctx.channel.send("Please add a prompt after !dream.")
 #     # Sends file from the api to the channel
 
+queue = asyncio.Queue()
+
+@nikobot.command(name='dream', help='generate an image')
+async def dreamd(ctx, *, arg=''):
+    prompt = ''
+    if arg != '':
+        prompt = arg
+        await queue.put((ctx, prompt))
+    else:
+        await ctx.channel.send("Please add a prompt after !dream.")
+    
+async def process_queue():
+    while True:
+        ctx, prompt = await queue.get()
+        filename = dream(prompt)
+        await ctx.channel.send(file=discord.File(filename))
+        os.remove(filename)
+        queue.task_done()
+
 
 if __name__ == "__main__" :
     print(discord.__version__)
@@ -234,4 +253,8 @@ if __name__ == "__main__" :
     s = socket.socket()
     s.connect((host, port))
 
+    loop = asyncio.get_event_loop()
+    # Start the coroutine that processes the queue as a background task
+    task = loop.create_task(process_queue())
+    
     nikobot.run(discord_niko_token)
