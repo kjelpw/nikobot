@@ -40,3 +40,5 @@ To add a command to the bot
 - [X] Microservice things
 - [X] Server manager can automatically turn off servers if need be 
 - [ ] Solve world hunger
+- [X] Connect to SD endpoint for image generation
+- [ ] Add buttons to SD reply to add more features
