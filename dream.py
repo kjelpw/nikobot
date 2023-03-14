@@ -13,7 +13,11 @@ def dream(prompt):
     if "neg:" in prompt:
         neg_prompt = prompt.split("neg:")[-1]
 
-    form = {"prompt":f"{prompt}, (8k, RAW photo, best quality, masterpiece:1.2), (intricate details), best quality, hyper detailed, highres, cinematic lighting, rim light, edge light, reflections, smooth, sharp focus, depth of field, bokeh, hyper realistic, Dynamic composition",
+    if "+" in prompt:
+        prompt = prompt.replace("+", " ")
+        prompt += ", (8k, RAW photo, best quality, masterpiece:1.2), (intricate details), best quality, hyper detailed, highres, hyper realistic, Dynamic composition"
+
+    form = {"prompt":f"{prompt}",
             "steps" : 30,
             "negative_prompt": f"{neg_prompt} (worst quality:2), (low quality:2), (normal quality:2), lowres, normal quality, ((monochrome)), ((grayscale)), bad anatomy,extra fingers,extra legs,extra arms,extra hands,fewer legs,fewer arms,fewer fingers, blur, noise, out of focus, watermark"}
     r = requests.post(secrets.api_endpoint, json=form).json()
