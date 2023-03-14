@@ -18,7 +18,7 @@ def dream(prompt):
         prompt += ", (8k, RAW photo, best quality, masterpiece:1.2), (intricate details), best quality, hyper detailed, highres, hyper realistic, Dynamic composition"
 
     form = {"prompt":f"{prompt}",
-            "steps" : 30,
+            "steps" : 25,
             "negative_prompt": f"{neg_prompt} (worst quality:2), (low quality:2), (normal quality:2), lowres, normal quality, ((monochrome)), ((grayscale)), bad anatomy,extra fingers,extra legs,extra arms,extra hands,fewer legs,fewer arms,fewer fingers, blur, noise, out of focus, watermark"}
     r = requests.post(secrets.api_endpoint, json=form).json()
 
