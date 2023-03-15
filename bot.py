@@ -15,7 +15,7 @@ import subprocess
 import numpy as np
 from meme import *
 from nikomaker import niko_browser
-from dream import dream
+from dream import *
 import asyncio
 import queue
 
@@ -226,6 +226,45 @@ async def snipe(ctx):
 #     # Sends file from the api to the channel
 
 queue = asyncio.Queue()
+style_library = load_style_library()
+
+@nikobot.command(name='dreamstyle', help='add a style to the dream knowledge base')
+async def dream_style(ctx, *, arg=''):
+    # Extract the style name, positive prompt, and negative prompt from the input string
+    name = arg.split(' ')[0]
+    if 'pos:' in arg:
+        pos_start = arg.index('pos:') + 4
+        if 'neg:' in arg:
+            pos_end = arg.index('neg:')
+            pos_prompt = arg[pos_start:pos_end].strip()
+            neg_prompt = arg[pos_end+4:].strip()
+        else:
+            pos_prompt = arg[pos_start:].strip()
+            neg_prompt = ''
+    else:
+        pos_prompt = ''
+        neg_prompt = ''
+
+    # Add the style to the library
+    style_library.add_style(name, pos_prompt, neg_prompt)
+
+    # Send a confirmation message
+    await ctx.send(f'Style "{name}" added to the library!')
+
+
+@nikobot.command(name='liststyles', help='list all styles in the dream knowledge base')
+async def list_styles(ctx):
+    styles = style_library.get_styles()
+    if not styles:
+        await ctx.send('There are no styles in the library.')
+    else:
+        msg = 'Styles in the library:\n\n'
+        for style in styles:
+            msg += f'Name: {style.name}\n'
+            msg += f'Positive Prompt: {style.pos_prompt}\n'
+            msg += f'Negative Prompt: {style.neg_prompt}\n\n'
+        await ctx.send(msg)
+
 
 @nikobot.command(name='dream', help='generate an image')
 async def dreamd(ctx, *, arg=''):
@@ -235,7 +274,7 @@ async def dreamd(ctx, *, arg=''):
         await queue.put((ctx, prompt))
     else:
         await ctx.reply("Please add a prompt after !dream.")
-    
+
 async def process_queue():
     while True:
         ctx, prompt = await queue.get()
