@@ -1,5 +1,6 @@
 """NikoMaker image generator using Selenium"""
 import asyncio
+import time
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
@@ -64,7 +65,7 @@ class NikoGenerator:
                 textbox.send_keys(message)
             
             # Wait a moment for rendering
-            driver.implicitly_wait(1)
+            time.sleep(1)
             
             # Take screenshot of the render element
             render_element = driver.find_element(By.ID, 'render')

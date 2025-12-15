@@ -2,6 +2,8 @@
 import base64
 import io
 import json
+import logging
+import os
 import uuid
 from typing import Optional
 
@@ -9,6 +11,8 @@ import requests
 from PIL import Image
 
 import config
+
+logger = logging.getLogger(__name__)
 
 
 class ImageGenerator:
@@ -68,7 +72,6 @@ class ImageGenerator:
                 image = Image.open(io.BytesIO(image_bytes))
                 
                 # Save the image
-                import os
                 os.makedirs(self.output_dir, exist_ok=True)
                 file_name = f"{self.output_dir}/sd_{uuid.uuid4()}.jpg"
                 image.save(file_name)
@@ -78,5 +81,5 @@ class ImageGenerator:
                 return None
                 
         except Exception as e:
-            print(f"Error generating image: {e}")
+            logger.error(f'Error generating image: {e}')
             return None

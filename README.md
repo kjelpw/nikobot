@@ -55,12 +55,12 @@ brew install geckodriver
 
 ### Main Bot
 ```bash
-python bot_refactored.py
+python bot.py
 ```
 
 ### Web Interface (Optional)
 ```bash
-python web_app.py
+python app.py
 ```
 The web interface will be available at `http://localhost:5000`
 
@@ -104,9 +104,9 @@ Available servers: factorio, minecraft, valheim
 
 ```
 nikobot/
-├── bot_refactored.py           # Main bot entry point
-├── web_app.py                  # Flask web interface
-├── server_manager_refactored.py # Server management daemon
+├── bot.py                      # Main bot entry point
+├── app.py                      # Flask web interface
+├── server_manager.py           # Server management daemon
 ├── config.example.py           # Configuration template
 ├── requirements.txt            # Python dependencies
 ├── commands/                   # Command modules (cogs)
