@@ -34,15 +34,22 @@ class MemeGenerator:
                 'text1': ''
             }
             
-            response = requests.post(self.CAPTION_URL, payload, timeout=30).json()
+            response = requests.post(self.CAPTION_URL, payload, timeout=30)
+            response.raise_for_status()  # Raise exception for bad status codes
             
-            if response.get('success'):
-                return response['data']['url']
+            data = response.json()
+            
+            if data.get('success'):
+                return data['data']['url']
             else:
-                return response.get('error_message', 'Unknown error')
+                return data.get('error_message', 'Unknown error')
                 
+        except requests.Timeout:
+            return 'Request timed out'
         except requests.RequestException as e:
             return f'Request failed: {str(e)}'
+        except ValueError as e:
+            return f'Invalid JSON response: {str(e)}'
         except Exception as e:
             return f'Error: {str(e)}'
             
