@@ -1,69 +1,58 @@
-from flask import Flask
+"""Flask web application for NikoBot monitoring"""
 import os
+from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
+
 @app.route('/')
-def hello_world():
-    return '<p>Hello, World!</p>'
+def index():
+    """Home page"""
+    return '<h1>NikoBot Web Interface</h1><p>Bot is running!</p><p><a href="/log">View Logs</a></p>'
+
 
 @app.route('/log')
-def log():
+def view_log():
+    """View recent log entries"""
+    log_file = 'log.txt'
+    num_lines = 50
     
-    fname = 'log.txt'
-    N = 4
-    bufsize = 200000
-    # calculating size of
-    # file in bytes
-    fsize = os.stat(fname).st_size
+    if not os.path.exists(log_file):
+        return '<p>No log file found.</p><p><a href="/">Back to Home</a></p>'
     
-    iter = 0
-    
-    print('fsize is: ' + str(fsize) + ' bufsize is: ' + str(bufsize))
-    print('if result should be: ' + str(bufsize > fsize))
-    # opening file using with() method
-    # so that file get closed
-    # after completing work
-    with open(fname) as f:
-        print('file opened')
-        if bufsize > fsize:
-            # adjusting buffer size
-            # according to size
-            # of file
-            bufsize = fsize-1
+    try:
+        # Read the last N lines efficiently
+        with open(log_file, 'r', encoding='utf-8') as f:
+            # Read all lines and get the last N
+            lines = f.readlines()
+            recent_lines = lines[-num_lines:] if len(lines) > num_lines else lines
+        
+        # Create HTML output
+        html_lines = ['<h1>Recent Log Entries</h1>']
+        html_lines.append('<p><a href="/">Back to Home</a></p>')
+        html_lines.append('<div style="font-family: monospace; white-space: pre-wrap;">')
+        
+        for line in recent_lines:
+            html_lines.append(f'{line}<br>')
             
-            # list to store
-            # last N lines
-            fetched_lines = []
-            
-            # while loop to
-            # fetch last N lines
-            while True:
-                iter += 1
-                
-                # moving cursor to
-                # the last Nth line
-                # of file
-                f.seek(fsize-bufsize * iter)
-                
-                # storing each line
-                # in list upto
-                # end of file
-                lines = f.read
-                for line in f.readlines():
-                    fetched_lines.append('<p>' + str(line) + '</p>')
-                
-                # halting the program
-                # when size of list
-                # is equal or greater to
-                # the number of lines requested or
-                # when we reach end of file
-                if len(fetched_lines) >= N or f.tell() == 0:
-                    page = ''.join(fetched_lines[-N:])
-                    print(type(page))
-                    return page
-        else:
-            print('bufsize smaller than fsize')
-            return
-if __name__ == '__main__' :
-    app.run(host='0.0.0.0')
+        html_lines.append('</div>')
+        
+        return ''.join(html_lines)
+        
+    except Exception as e:
+        return f'<p>Error reading log file: {str(e)}</p><p><a href="/">Back to Home</a></p>'
+
+
+@app.route('/health')
+def health():
+    """Health check endpoint"""
+    return {'status': 'ok', 'service': 'nikobot-web'}
+
+
+def main():
+    """Run the Flask application"""
+    app.run(host='0.0.0.0', port=5000, debug=False)
+
+
+if __name__ == '__main__':
+    main()
