@@ -1,11 +1,30 @@
+# Secrets and configuration
 secrets.*
-todo.txt
-geckodriver.log
-nikomessage.png
-__pycache__
+config.py
 .env
+
+# Logs
+*.log
+geckodriver.log
 discord.log
+log.txt
+
+# Generated files
+nikomessage.png
 mess.npy
 mess.txt
-log.txt
-dream
+todo.txt
+
+# Directories
+__pycache__/
+*.pyc
+dream/
+.venv/
+venv/
+legacy/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

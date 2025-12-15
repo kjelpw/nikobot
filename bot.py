@@ -1,234 +1,117 @@
-# -*- coding: utf-8 -*-
-'''
-Created Nov 2019
-
-@author: canth
-'''
+"""
+NikoBot - A Discord bot for a private server
+Refactored for modern discord.py 2.x
+"""
 import logging
 import datetime
 import os
 import pickle
-import discord
-from discord.ext import commands,tasks
 import socket
-import subprocess
-import numpy as np
-from meme import *
-from nikomaker import niko_browser
-from dream import dream
+from typing import Optional
 
+import discord
+from discord.ext import commands
 
-discord_niko_token = secrets.token
-comm_prefix='!'
-logger = logging.getLogger('discord')
-logger.setLevel(logging.INFO)
-handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
-handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
-logger.addHandler(handler)
-#logging.basicConfig(level=logging.WARNING)
+# Import configuration
+try:
+    import config
+except ImportError:
+    print("ERROR: config.py not found!")
+    print("Please copy config.example.py to config.py and fill in your values.")
+    exit(1)
 
+# Import command modules
+from commands import meme_commands, niko_commands, server_commands, utility_commands
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s:%(levelname)s:%(name)s: %(message)s',
+    handlers=[
+        logging.FileHandler('discord.log', encoding='utf-8', mode='w'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger('nikobot')
+
+# Store previous messages for snipe command
 prev_messages = {}
 
-intents = discord.Intents().all()
-nikobot = commands.Bot(command_prefix=comm_prefix, intents=intents, activity=discord.Activity(type=discord.ActivityType.watching, name='YOU'))
 
-@nikobot.event
-async def on_ready():
-    print('Logged on as {0}!'.format(secrets.bot_id))
-
-@nikobot.event
-async def on_message(message):
-    if message.author.id == secrets.bot_id or message.author in secrets.bots_id:
-        #so bot doesn't reply to itself or other bots
-        return
-    print('Message from {0.author} in {0.channel}: {0.content}'.format(message))
-    with open('log.txt', 'a') as f:
-        f.write('Message from {0.author} in {0.channel}: {0.content}'.format(message) + '\n')
-    if message.content == 'hi <@!' + str(secrets.bot_id) + '>':
-        await message.send('hi <@{0.author.id}>'.format(message))
+class NikoBot(commands.Bot):
+    """Custom Bot class for NikoBot"""
     
-    if message.content[:1] != comm_prefix:
-        prev_messages[message.channel] = [message.content, str(message.author)]
-
-    await nikobot.process_commands(message)
-
-
-# @nikobot.command(name='help', help=)
-# async def HelpCommand(ctx):
-#     embed = discord.Embed(
-#         title='Nikobot Help',
-#         color=discord.Color.dark_red()
-#     )
-#     for key in cmds:
-#         embed.add_field(name=key, value = cmds[key])
-#     await ctx.send(embed)
-
-
-@nikobot.command(name='hi', help='returns a hello')
-async def greet(ctx):
-    await ctx.send('Hello World!')
-
-
-@nikobot.command(name='ping', help='test response time')
-async def ping(ctx):
-    await ctx.send('Pong!')
-
-
-async def unrecognized_cmd(ctx):
-    await ctx.send('Unrecognized Command: use !help')
-
-
-@nikobot.command(name='canthtime', help='displays the current date and time in CanthLand')
-async def canth_time(ctx):
-    await ctx.send(datetime.datetime.now())
-
-
-@nikobot.command(name='nikomaker', help='Converts the previous or current message into a NikoQuote')
-async def niko_maker(ctx, *, arg=''):
-    niko_message = ''
-    if arg != '':
-        niko_message = arg
-    else:
-        niko_message = prev_messages.get(ctx.channel)[0]
-    await niko_browser(ctx, niko_message)
-
-
-@nikobot.command(name='nikomakerd', help='Converts the previous or current message into a NikoQuote, deletes command')
-async def niko_maker(ctx, *, arg=''):
-    niko_message = ''
-    if arg != '':
-        niko_message = arg
-    else:
-        niko_message = prev_messages.get(ctx.channel)[0]
-    await niko_browser(ctx, niko_message)
-    await ctx.message.delete()
-
-
-@nikobot.command(name='stuffd', help='Tony Stark a message and delete')
-async def stuffd(ctx, *, arg=''):
-    meme_url = ''
-
-    if arg != '':
-        meme_url = make_meme_stuff(arg)
-    else:
-        meme_url = make_meme_stuff(prev_messages.get(ctx.channel)[0])
-    await ctx.channel.send(meme_url)
-    await ctx.message.delete()
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        intents.presences = True
+        
+        super().__init__(
+            command_prefix=config.COMMAND_PREFIX,
+            intents=intents,
+            activity=discord.Activity(
+                type=discord.ActivityType.watching,
+                name='YOU'
+            )
+        )
+        
+        self.prev_messages = prev_messages
+        self.server_socket = None
+        
+    async def setup_hook(self):
+        """Setup hook for loading cogs"""
+        # Load command cogs
+        await self.load_extension('commands.meme_commands')
+        await self.load_extension('commands.niko_commands')
+        await self.load_extension('commands.utility_commands')
+        await self.load_extension('commands.server_commands')
+        logger.info("All command cogs loaded successfully")
+        
+    async def on_ready(self):
+        """Called when the bot is ready"""
+        logger.info(f'Logged on as {self.user} (ID: {self.user.id})')
+        logger.info(f'Connected to {len(self.guilds)} guilds')
+        logger.info('------')
+        
+    async def on_message(self, message: discord.Message):
+        """Handle incoming messages"""
+        # Ignore messages from the bot itself or other bots
+        if message.author.bot:
+            return
+            
+        # Log the message
+        logger.info(f'Message from {message.author} in {message.channel}: {message.content}')
+        with open('log.txt', 'a', encoding='utf-8') as f:
+            f.write(f'Message from {message.author} in {message.channel}: {message.content}\n')
+        
+        # Handle mentions
+        if self.user.mentioned_in(message) and message.content == f'hi <@{self.user.id}>':
+            await message.channel.send(f'hi <@{message.author.id}>')
+        
+        # Store non-command messages for snipe command
+        if not message.content.startswith(config.COMMAND_PREFIX):
+            self.prev_messages[message.channel.id] = {
+                'content': message.content,
+                'author': str(message.author)
+            }
+        
+        # Process commands
+        await self.process_commands(message)
 
 
-@nikobot.command(name='stuff', help='Tony Stark a message')
-async def stuff(ctx, *, arg=''):
-    meme_url = ''
-
-    if arg != '':
-        meme_url = make_meme_stuff(arg)
-    else:
-        meme_url = make_meme_stuff(prev_messages.get(ctx.channel)[0])
-    await ctx.channel.send(meme_url)
-
-
-@nikobot.command(name='aidnad', help='it\'s him')
-async def aidnad(ctx, *, arg=''):
-    meme_url = ''
-
-    if arg != '':
-        meme_url = make_meme_aidna(arg)
-    else:
-        meme_url = make_meme_aidna(prev_messages.get(ctx.channel)[0])
-    await ctx.channel.send(meme_url)
-    await ctx.message.delete()
-
-
-@nikobot.command(name='aidna', help='he is here')
-async def aidna(ctx, *, arg=''):
-    meme_url = ''
-
-    if arg != '':
-        meme_url = make_meme_aidna(arg)
-    else:
-        meme_url = make_meme_aidna(prev_messages.get(ctx.channel)[0])
-    await ctx.channel.send(meme_url)
-
-
-@nikobot.command(name='join', help='join a voice channel')
-async def join(ctx):
-    if ctx.author.voice:
-        await ctx.author.voice.channel.connect()
-
-
-#@nikobot.command(name='leave', help='leave a voice channel')
-async def leave(ctx):
-    voice = ctx.guild.voice_client
-    if voice.is_connected():
-        await voice.disconnect()
-
-
-#@nikobot.command()
-async def talk(ctx):
-    await join(ctx)
-
-
-# @nikobot.command(name='log', help='does literally nothing ;)')
-# async def log(ctx, num=1, name='214605185765343232'):
-#     #delete the call so Ashyan doesn't spam it
-#     await ctx.message.delete()
-
-#     messages = await ctx.channel.history(limit=num).flatten()
-#     print(type(messages))
-#     messages = np.asarray(messages)
-
-#     np.save('mess', messages)
-
-
-#@nikobot.event
-async def on_member_update(before, after):
-    if after.activity != None:
-        if len(after.activities) > 1:
-            print(after.name + " is playing " + after.activities[1].name)
-
-
-@nikobot.command(name='server', help='See server status, start a server, get server ip')
-async def server(ctx, *, arg=''):
-    if ctx.guild.id == secrets.guild_permission:
-        if arg != '':
-            s.send(('server_process ' + arg).encode('utf-8'))
-            response = pickle.loads(s.recv(1024))
-            await ctx.channel.send(embed=response)
-        else:
-            s.send(('server_list').encode('utf-8'))
-            response = pickle.loads(s.recv(1024))
-            await ctx.channel.send(embed=response)
-    else:
-        await ctx.channel.send("Command does not work in this server")
-
-
-@nikobot.command(name='snipe', help='sends the last message')
-async def snipe(ctx):
-    if ctx.channel in prev_messages:
-        description = str(prev_messages.get(ctx.channel)[1] + ': ' + prev_messages.get(ctx.channel)[0])
-        embed = discord.Embed(title='Previous Message', description=description, color=discord.Color.dark_red())
-        await ctx.channel.send(embed=embed)
-    else:
-        await ctx.channel.send('No previous message exists!')
-
-@nikobot.command(name='dream', help='generate an image')
-async def dreamd(ctx, *, arg=''):
-    prompt = ''
-    if arg != '':
-        prompt = arg
-        filename = dream(prompt)
-        await ctx.channel.send(file=discord.File(filename))
-        os.remove(filename)
-    else:
-        await ctx.channel.send("Please add a prompt after !dream.")
-    # Sends file from the api to the channel
-
-if __name__ == "__main__" :
-    print(discord.__version__)
-    host = socket.gethostname()
-    port = 6969
+def main():
+    """Main entry point for the bot"""
+    bot = NikoBot()
     
-    s = socket.socket()
-    # s.connect((host, port))
+    try:
+        bot.run(config.DISCORD_TOKEN, log_handler=None)
+    except discord.LoginFailure:
+        logger.error("Failed to login. Check your DISCORD_TOKEN in config.py")
+    except Exception as e:
+        logger.error(f"An error occurred: {e}", exc_info=True)
 
-    nikobot.run(discord_niko_token)
+
+if __name__ == "__main__":
+    logger.info(f"Starting NikoBot with discord.py version {discord.__version__}")
+    main()

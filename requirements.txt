@@ -1,0 +1,16 @@
+# Discord Bot
+discord.py>=2.3.0
+aiohttp>=3.9.0
+
+# Web Framework
+flask>=3.0.0
+
+# Image Generation & Processing
+Pillow>=10.0.0
+requests>=2.31.0
+
+# Web Scraping (for nikomaker)
+selenium>=4.15.0
+
+# Utilities
+python-dotenv>=1.0.0
