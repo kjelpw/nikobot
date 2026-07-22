@@ -9,3 +9,9 @@ mess.npy
 mess.txt
 log.txt
 dream
+
+# the bot runs as a container now; the old systemd venv is not source
+.venv/
+# stray test downloads
+*.webm
+style_library.pickle

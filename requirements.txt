@@ -1,0 +1,16 @@
+# Runtime deps. Installed into the image by the Dockerfile; the bot now runs as a
+# container rather than the old nikobot.service venv.
+#
+# discord.py is pinned to 1.7.3 because bot.py targets the 1.x API. It does run
+# on Python 3.12. Moving to 2.x would require code changes - notably the
+# asyncio.get_event_loop()/create_task(process_queue()) block at the bottom of
+# bot.py, which only works because 1.x reuses that loop in Bot.run().
+discord.py==1.7.3
+flask
+pillow
+requests
+# pinned to 4.x: nikomaker.py uses the find_element(By.ID, ...) API. The old
+# find_element_by_id() helpers were removed in Selenium 4 and would break again on
+# an unpinned downgrade to 3.x.
+selenium==4.46.0
+yt-dlp

@@ -1,0 +1,22 @@
+# The host venv is irrelevant inside the image and is the single largest directory
+.venv/
+__pycache__/
+.git/
+
+# Runtime artifacts, not source
+*.log
+log.txt
+discord.log
+geckodriver.log
+nikomessage.png
+style_library.pickle
+mess.npy
+mess.txt
+dream/
+
+# 84MB test download that was never meant to be committed
+*.webm
+
+# Never bake the token into an image layer - it is bind-mounted at runtime
+secrets.py
+.env

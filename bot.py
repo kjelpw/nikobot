@@ -8,16 +8,16 @@ import logging
 import datetime
 import os
 import pickle
+import subprocess
 import discord
 from discord.ext import commands,tasks
-import socket
-import subprocess
-import numpy as np
 from meme import *
 from nikomaker import niko_browser
 from dream import *
 import asyncio
 import queue
+import yt_dlp as youtube_dlp
+from time import sleep
 
 
 discord_niko_token = secrets.token
@@ -30,6 +30,7 @@ logger.addHandler(handler)
 #logging.basicConfig(level=logging.WARNING)
 
 prev_messages = {}
+play_queue = []
 
 intents = discord.Intents().all()
 nikobot = commands.Bot(command_prefix=comm_prefix, intents=intents, activity=discord.Activity(type=discord.ActivityType.watching, name='YOU'))
@@ -152,22 +153,11 @@ async def aidna(ctx, *, arg=''):
     await ctx.channel.send(meme_url)
 
 
-@nikobot.command(name='join', help='join a voice channel')
-async def join(ctx):
-    if ctx.author.voice:
-        await ctx.author.voice.channel.connect()
-
-
 #@nikobot.command(name='leave', help='leave a voice channel')
 async def leave(ctx):
     voice = ctx.guild.voice_client
     if voice.is_connected():
         await voice.disconnect()
-
-
-#@nikobot.command()
-async def talk(ctx):
-    await join(ctx)
 
 
 # @nikobot.command(name='log', help='does literally nothing ;)')
@@ -200,6 +190,15 @@ async def server(ctx, *, arg=''):
             s.send(('server_list').encode('utf-8'))
             response = pickle.loads(s.recv(1024))
             await ctx.channel.send(embed=response)
+    else:
+        await ctx.channel.send("Command does not work in this server")
+
+
+@nikobot.command(name='ip', help='Get server ip')
+async def server(ctx, *, arg=''):
+    if ctx.guild.id == secrets.guild_permission or secrets.guild_permission2:
+        ip = subprocess.run(['dig', '-4', '+short', 'myip.opendns.com', '@resolver1.opendns.com'], stdout=subprocess.PIPE).stdout.decode('utf-8')
+        await ctx.channel.send(ip)
     else:
         await ctx.channel.send("Command does not work in this server")
 
@@ -275,6 +274,74 @@ async def dreamd(ctx, *, arg=''):
     else:
         await ctx.reply("Please add a prompt after !dream.")
 
+@nikobot.command(name='talk', help='its better than Ashyans')
+async def talk(ctx, url_given):
+    voice_channel = ctx.author.voice.channel
+    if voice_channel:
+        voice_client = await voice_channel.connect()
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        }
+        with youtube_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url_given, download=False)
+            url2 = info['formats'][0]['url']
+            song_info = {
+                'url': url_given,
+                'title': info['title'],
+                'requester': ctx.author
+            }
+            play_queue.append(song_info)
+            next_song = play_queue.pop()
+            ffmpeg_options = {
+                'before_options': '-reconnect_streamed 1 -reconnect_delay_max 5',
+                'options': '-vn'
+            }
+            ytdl = subprocess.Popen(["yt-dlp", "--verbose", "--skip-download", "--extract-audio", "--audio-format", "mp3", next_song['url']], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            print('Now for FFMPEG')
+            audsrc = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(ytdl.stdout, pipe=True, **ffmpeg_options))
+            voice_client.play(audsrc)            
+    else:
+        await ctx.send("You must be in a voice channel to use this command.")
+        
+
+@nikobot.command()
+async def skip(ctx):
+    voice_client = ctx.guild.voice_client
+    if voice_client.is_playing():
+        voice_client.stop()
+        if len(play_queue) > 0:
+            next_song = play_queue.pop(0)
+            await ctx.send(f'Skipped: {next_song["title"]}')
+            url = next_song['url']
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+            }
+            with youtube_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                url2 = info['formats'][0]['url']
+                voice_client.play(discord.FFmpegPCMAudio(url2))
+        else:
+            await stop(ctx)
+
+@nikobot.command()
+async def stop(ctx):
+    voice_client = ctx.guild.voice_client
+    if voice_client.is_playing():
+        voice_client.stop()
+        play_queue.clear()
+        await voice_client.disconnect()
+        await ctx.send("Stopped playing.")
+
 async def process_queue():
     while True:
         ctx, prompt = await queue.get()
@@ -286,10 +353,10 @@ async def process_queue():
 
 if __name__ == "__main__" :
     print(discord.__version__)
-    host = socket.gethostname()
-    port = 6969
+    # host = socket.gethostname()
+    # port = 6969
     
-    s = socket.socket()
+    # s = socket.socket()
     # s.connect((host, port))
 
     loop = asyncio.get_event_loop()
