@@ -3,7 +3,10 @@ FROM python:3.12-slim
 # ffmpeg  - yt-dlp merges audio/video streams for the !talk queue (bot.py:304)
 # dnsutils - bot.py:200 shells out to `dig` for the !ip command
 # firefox-esr - nikomaker.py drives headless Firefox via Selenium for !nikomaker
+# upgrade - python:*-slim lags Debian security fixes by days; without it a rebuild
+#           re-ships whatever vulnerable libssl the base image was cut with
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ffmpeg dnsutils firefox-esr \
     && rm -rf /var/lib/apt/lists/*
 
