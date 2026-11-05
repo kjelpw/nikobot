@@ -7,7 +7,11 @@
 # bot.py, which only works because 1.x reuses that loop in Bot.run().
 discord.py==1.7.3
 flask
-pillow
+# Floor, not a pin: <13.0.0 carries CVE-2026-112393 / CVE-2026-112900 (CRITICAL)
+# plus ten HIGHs. Bare `pillow` let Docker's layer cache keep re-shipping 12.3.0
+# on every rebuild, because pip only re-resolves when this file changes.
+# dream.py only uses Image.open and PngImagePlugin, both unchanged in 13.
+pillow>=13.0.0
 requests
 # pinned to 4.x: nikomaker.py uses the find_element(By.ID, ...) API. The old
 # find_element_by_id() helpers were removed in Selenium 4 and would break again on
