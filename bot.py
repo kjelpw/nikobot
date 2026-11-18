@@ -20,11 +20,12 @@ import logging.handlers
 import os
 import random
 import time
+from datetime import date
 from pathlib import Path
 
 import aiohttp
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import persona
 import safety
@@ -62,6 +63,21 @@ def guild_ids(*values) -> frozenset[int]:
 def ip_allowed(guild_id: int | None, allowed: frozenset[int]) -> bool:
     """A guild the bot may act in: one of the owner's, never a DM (None)."""
     return guild_id is not None and guild_id in allowed
+
+
+_ACTIVITY_TYPES = {
+    "watching": discord.ActivityType.watching,
+    "listening": discord.ActivityType.listening,
+    "playing": discord.ActivityType.playing,
+    "competing": discord.ActivityType.competing,
+}
+
+
+def activity_for(kind: str, text: str) -> discord.BaseActivity:
+    """A Discord presence for one of persona.STATUSES."""
+    if kind == "custom":
+        return discord.CustomActivity(name=text)
+    return discord.Activity(type=_ACTIVITY_TYPES[kind], name=text)
 
 
 class Cooldown:
@@ -165,15 +181,15 @@ class Nikobot(commands.Bot):
             command_prefix="!",
             help_command=None,  # no !help: the bot answers nothing it wasn't built for
             intents=intents,
-            activity=discord.Activity(
-                type=discord.ActivityType.watching, name="the ever-evolving landscape"
-            ),
+            # today's parody status; daily_status swaps it when the date changes
+            activity=activity_for(*persona.status_for(date.today())),
             # whatever the model writes, it can never ping @everyone, roles or users
             allowed_mentions=discord.AllowedMentions(
                 everyone=False, roles=False, users=False, replied_user=True
             ),
         )
         self.allowed_guilds = allowed_guilds
+        self.status_day = date.today()
         self.cooldown = Cooldown(CHAT_COOLDOWN_S)
         self.message_log = make_message_log(DATA_DIR / "messages.log")
         self.llm_lock = asyncio.Lock()
@@ -185,6 +201,26 @@ class Nikobot(commands.Bot):
     async def setup_hook(self) -> None:
         self.http_session = aiohttp.ClientSession()
         self.llm = Ollama(OLLAMA_URL, MODEL, self.http_session)
+        self.daily_status.start()
+
+    @tasks.loop(minutes=15)
+    async def daily_status(self) -> None:
+        """Swap to the next parody status once the local date changes."""
+        today = date.today()
+        if today == self.status_day:
+            return
+        kind, text = persona.status_for(today)
+        try:
+            await self.change_presence(activity=activity_for(kind, text))
+        except discord.HTTPException as exc:
+            log.warning("status change failed (HTTP %s); will retry", exc.status)
+            return
+        self.status_day = today
+        log.info("status for %s: %s %r", today, kind, text)
+
+    @daily_status.before_loop
+    async def before_daily_status(self) -> None:
+        await self.wait_until_ready()
 
     async def close(self) -> None:
         await super().close()
@@ -200,6 +236,7 @@ class Nikobot(commands.Bot):
             len(self.allowed_guilds),
             "on" if self.message_log is not None else "OFF",
         )
+        log.info("status for %s: %s %r", self.status_day, *persona.status_for(self.status_day))
         for guild in self.guilds:
             log.info(
                 "in guild %s (%s): %s",

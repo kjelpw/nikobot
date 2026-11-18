@@ -10,6 +10,9 @@ A small Discord bot (discord.py 2.x) for a private server. It does two things:
   result? Pure synergy. I hope this helps! ✨"* It is sarcastic and deliberately
   useless. Replies come from a local LLM served by [Ollama](https://ollama.com).
 
+Its Discord status changes once a day to one of about 40 hand-written parody
+statuses (`persona.STATUSES`), going through all of them before any repeats.
+
 It never speaks unprompted: only an @mention, a reply to it, or `!ip` gets a
 response. It works only in the two servers named in `secrets.py`, leaves any
 other server it is added to, and ignores DMs entirely (no reply, nothing sent
