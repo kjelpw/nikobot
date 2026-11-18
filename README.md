@@ -1,42 +1,116 @@
 # NikoBot
-A discord bot using discord.py for use in a private server.
 
+A small Discord bot (discord.py 2.x) for a private server. It does two things:
 
-# Noteable Things
-The !NikoMaker command uses Selenium to navigate to https://gh.princessrtfm.com/niko.html and create an image with the specified text
+- **`!ip`** posts the host's public IPv4 address (via `dig`). It only works in
+  the two servers named in `secrets.py`, and never in DMs.
+- **Chat.** @mention the bot, or reply to one of its messages, and it answers as
+  an over-the-top parody of AI-assistant "slop": *"Certainly! 🚀 Let's delve into
+  the rich tapestry of your sandwich — it's not just lunch, it's a journey. The
+  result? Pure synergy. I hope this helps! ✨"* It is sarcastic and deliberately
+  useless. Replies come from a local LLM served by [Ollama](https://ollama.com).
 
-The !stuff command accesses the imgflip api to create a meme image of the specified text
+It can also, very rarely, chime in on its own (see below). That is off unless
+you list channels for it. `!hush` turns chime-ins off for 7 days.
 
+## Safety
 
-# Needed Stuff
-`secrets.py` should be a file containing the following variables
+The persona never jokes about serious things, and that is enforced in code, not
+left to the model:
 
-#### The username of an imgflip account: `username`
-#### The password of an imgflip account: `password`
-#### The discord auth token your bot will use: `token`
-#### The user id of the bot: `bot_id`
-#### The guild id where the server command may be used: `guild_permission`
-#### The list of bot ids in the server, so we can avoid responding to them: `bots_id`
+- **Crisis language** (self-harm and similar) always gets a fixed, plain reply
+  that points to a trusted person, a crisis line or local emergency services.
+- **Every mention** first goes through a short LLM check of the last few lines.
+  The bot only jokes if that check answers exactly `NO` (nothing serious, nobody
+  upset). Anything else, including errors and timeouts, gets a short, sincere
+  bow-out in plain words.
+- The persona prompt forbids hate, slurs, sexual content and cruelty to a
+  specific person.
+- The bot can never ping `@everyone`, `@here`, roles or users. Its replies only
+  notify the person it is replying to.
+- Message content is never logged.
 
+## Requirements
 
-# Adding to the bot
-To add a command to the bot
+- **The Message Content intent must be enabled** for the bot in the Discord
+  Developer Portal (Bot → Privileged Gateway Intents). Without it the bot cannot
+  read messages. It needs no other privileged intents.
+- The bot needs Read Message History in the channels where it chats, so it can
+  give the model a little context.
+- An Ollama server it can reach.
 
-1. Create a function that describes implements your command
-2. Add a decorator to your function nikobot.command
-3. In the decorator specify the actual command that will be called by setting name
-4. Optionally, specify the help text by setting help
+## Configuration
 
-# TODO
-- [X] Some sort of web interface to control and monitor the bot, possibly using Flask?
-- [ ] Play saved sounds clips like a soundboard (Unoriginal, but good for learning how to transmit audio)
-- [ ] Receive audio
-- [ ] Speech jammer
-- [ ] Command to save audio over the past few minutes, specified by a command argument?
-- [ ] Save user activity over bot restarts
-- [ ] Using past messages, train a ml model to speak like a server member 
-- [X] A command named "snipe", which outputs the most recent message
-- [X] Be able to start up game servers and get status of running servers
-- [X] Microservice things
-- [X] Server manager can automatically turn off servers if need be 
-- [ ] Solve world hunger
+`secrets.py` is a plain Python file. It is gitignored and should be mounted
+read-only, by default at `/app/secrets.py`. It defines:
+
+| Name | Meaning |
+| --- | --- |
+| `token` | the bot's Discord token |
+| `guild_permission`, `guild_permission2` | the two server IDs where `!ip` works |
+
+Keep it **out of the code directory**. discord.py imports the standard library's
+`secrets` module, and a `secrets.py` next to `bot.py` would shadow it. The bot
+refuses to start if that happens.
+
+Environment variables:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `NIKOBOT_MODEL` | `local-chat:latest` | Ollama model to use. Names containing `chat` or `gpt-oss` are sent `"think": "low"`. |
+| `NIKOBOT_CHIME_CHANNELS` | *(empty)* | Comma-separated channel IDs where chime-ins are allowed. Empty means chime-ins are off. |
+| `OLLAMA_URL` | `http://ollama:11434` | Base URL of the Ollama server. |
+| `NIKOBOT_DATA_DIR` | `/data` | Where `chime_state.json` (the daily cap and the `!hush` expiry) is kept. |
+| `NIKOBOT_SECRETS` | `/app/secrets.py` | Path to `secrets.py`. |
+
+The LLM is assumed to be slow and shared (CPU only), so requests are kept
+small: non-streaming, about 150 output tokens (plus a reasoning budget for
+thinking models), the last 8 messages at up to 300 characters each, and a
+system prompt of about 250 tokens. One request runs at a time. If the model is
+still loading (timeout 240 s), the bot says so in character.
+
+## How chime-ins are gated
+
+A chime-in is an unprompted remark. It happens only if **every** gate passes,
+checked cheapest first. Each decision is logged at INFO with its reason (for
+example `chime skipped: daily cap`), never with message content.
+
+1. The channel is listed in `NIKOBOT_CHIME_CHANNELS`, and the message is not in a DM.
+2. `!hush` is not active.
+3. There has been no chime-in in the last 24 hours, across all servers. The
+   timestamp is kept in `/data`, so a restart doesn't reset it. If the state file
+   can't be written, chime-ins are disabled. If it is corrupt, the 24 hours start
+   again from now.
+4. The channel is having active banter: at least 4 messages from at least 2
+   different humans within 10 minutes.
+5. A 2% roll per eligible message passes.
+6. None of the last 15 messages hits a conservative serious-topic blocklist
+   (death, illness, money, work, legal trouble, politics, feeling sad, and so on).
+7. The model is idle and already loaded, so a chime-in never forces a slow reload.
+8. An LLM classifier is asked whether the conversation is clearly lighthearted
+   banter with nothing serious, sensitive, emotional or important in it. Only an
+   exact `YES` passes.
+
+## Running
+
+```sh
+docker build -t nikobot .
+docker run -d --name nikobot \
+  -v /path/to/secrets.py:/app/secrets.py:ro \
+  -v nikobot_data:/data \
+  -e OLLAMA_URL=http://ollama:11434 \
+  nikobot
+```
+
+The image runs as UID 1000. `secrets.py` must be readable by that user, and
+`/data` writable by it.
+
+## Tests
+
+The pure logic (blocklist, chime gates, mention stripping, prompt building, the
+`!ip` check, and so on) is covered by pytest:
+
+```sh
+docker run --rm -v "$PWD":/src:ro -w /src python:3.12-slim \
+  sh -c "pip install -q -r requirements.txt pytest && python -m pytest -q -p no:cacheprovider"
+```

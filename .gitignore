@@ -1,17 +1,8 @@
 secrets.*
-todo.txt
-geckodriver.log
-nikomessage.png
-__pycache__
 .env
-discord.log
-mess.npy
-mess.txt
-log.txt
-dream
-
-# the bot runs as a container now; the old systemd venv is not source
+__pycache__
+.pytest_cache/
 .venv/
-# stray test downloads
-*.webm
-style_library.pickle
+# runtime state written to /data
+chime_state.json
+*.log

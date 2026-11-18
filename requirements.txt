@@ -1,20 +1,4 @@
-# Runtime deps. Installed into the image by the Dockerfile; the bot now runs as a
-# container rather than the old nikobot.service venv.
-#
-# discord.py is pinned to 1.7.3 because bot.py targets the 1.x API. It does run
-# on Python 3.12. Moving to 2.x would require code changes - notably the
-# asyncio.get_event_loop()/create_task(process_queue()) block at the bottom of
-# bot.py, which only works because 1.x reuses that loop in Bot.run().
-discord.py==1.7.3
-flask
-# Floor, not a pin: <13.0.0 carries CVE-2026-112393 / CVE-2026-112900 (CRITICAL)
-# plus ten HIGHs. Bare `pillow` let Docker's layer cache keep re-shipping 12.3.0
-# on every rebuild, because pip only re-resolves when this file changes.
-# dream.py only uses Image.open and PngImagePlugin, both unchanged in 13.
-pillow>=13.0.0
-requests
-# pinned to 4.x: nikomaker.py uses the find_element(By.ID, ...) API. The old
-# find_element_by_id() helpers were removed in Selenium 4 and would break again on
-# an unpinned downgrade to 3.x.
-selenium==4.46.0
-yt-dlp
+# Runtime deps, installed into the image by the Dockerfile.
+# Exact pin: pip only re-resolves when this file changes, so a pin is also how a
+# rebuild picks up a fix. aiohttp (used for the Ollama calls) comes with it.
+discord.py==2.7.1
