@@ -377,13 +377,14 @@ class Nikobot(commands.Bot):
                 )
                 lines.append(trigger)
                 if not await self.clears_serious_check(lines):
-                    log.info("chat: serious check did not clear, sent fixed bow-out")
-                    text = random.choice(safety.BOW_OUT_LINES)
-                else:
-                    prompt = persona.build_chat_messages(
-                        lines, serious_hint=safety.is_serious([trigger.text])
-                    )
-                    text = await self.generate(prompt)
+                    # The owner's rule: when it's serious, say nothing at all,
+                    # even though the bot was pinged.
+                    log.info("chat: serious check did not clear; staying silent")
+                    return
+                prompt = persona.build_chat_messages(
+                    lines, serious_hint=safety.is_serious([trigger.text])
+                )
+                text = await self.generate(prompt)
         finally:
             self.waiting -= 1
         await self.send(message.channel, text, message)

@@ -27,8 +27,8 @@ left to the model:
   that points to a trusted person, a crisis line or local emergency services.
 - **Every mention** first goes through a short LLM check of the last few lines.
   The bot only jokes if that check answers exactly `NO` (nothing serious, nobody
-  upset). Anything else, including errors and timeouts, gets a short, sincere
-  bow-out in plain words.
+  upset). Anything else, including errors and timeouts, and it says nothing at
+  all, even though it was pinged.
 - The persona prompt forbids hate, slurs, sexual content and cruelty to a
   specific person.
 - The bot can never ping `@everyone`, `@here`, roles or users. Its replies only
