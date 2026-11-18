@@ -6,7 +6,7 @@ about a parent in hospital and about someone feeling invisible), so:
 - is_crisis: self-harm language. Always answered with a fixed, kind line.
 - serious check: before every mention reply, a short LLM call over the last
   few lines must answer exactly NO ("not serious"). Anything else, or any
-  error, gets a plain, fixed bow-out instead of a joke.
+  error, and the bot says nothing at all (BOW_OUT_LINES is no longer used).
 - is_serious: a broad, conservative keyword blocklist. It blocks every
   chime-in outright, and on a mention it adds a caution to the persona prompt.
 
