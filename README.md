@@ -10,8 +10,10 @@ A small Discord bot (discord.py 2.x) for a private server. It does two things:
   result? Pure synergy. I hope this helps! ✨"* It is sarcastic and deliberately
   useless. Replies come from a local LLM served by [Ollama](https://ollama.com).
 
-It can also, very rarely, chime in on its own (see below). That is off unless
-you list channels for it. `!hush` turns chime-ins off for 7 days.
+It never speaks unprompted: only an @mention, a reply to it, or `!ip` gets a
+response. It works only in the two servers named in `secrets.py`, leaves any
+other server it is added to, and ignores DMs entirely (no reply, nothing sent
+to the model).
 
 ## Safety
 
@@ -28,7 +30,10 @@ left to the model:
   specific person.
 - The bot can never ping `@everyone`, `@here`, roles or users. Its replies only
   notify the person it is replying to.
-- Message content is never logged.
+- One ping per person per 20 seconds; extra pings are ignored.
+- Every message the bot can see (DMs included) is logged as JSON lines to
+  `/data/messages.log`, rotated at 10 × 10 MB. Message content never goes to
+  stdout, so it stays out of container logs and Loki.
 
 ## Requirements
 
@@ -58,9 +63,8 @@ Environment variables:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `NIKOBOT_MODEL` | `local-chat:latest` | Ollama model to use. Names containing `chat` or `gpt-oss` are sent `"think": "low"`. |
-| `NIKOBOT_CHIME_CHANNELS` | *(empty)* | Comma-separated channel IDs where chime-ins are allowed. Empty means chime-ins are off. |
 | `OLLAMA_URL` | `http://ollama:11434` | Base URL of the Ollama server. |
-| `NIKOBOT_DATA_DIR` | `/data` | Where `chime_state.json` (the daily cap and the `!hush` expiry) is kept. |
+| `NIKOBOT_DATA_DIR` | `/data` | Where `messages.log` is written. |
 | `NIKOBOT_SECRETS` | `/app/secrets.py` | Path to `secrets.py`. |
 
 The LLM is assumed to be slow and shared (CPU only), so requests are kept
@@ -69,7 +73,11 @@ thinking models), the last 8 messages at up to 300 characters each, and a
 system prompt of about 250 tokens. One request runs at a time. If the model is
 still loading (timeout 240 s), the bot says so in character.
 
-## How chime-ins are gated
+## Chime-ins (built, not wired up)
+
+`chime.py` implements gated, unprompted chime-ins, but `bot.py` doesn't use it:
+the bot only speaks when asked. Turning them back on is a code change, not a
+setting. The gates below describe that unused code.
 
 A chime-in is an unprompted remark. It happens only if **every** gate passes,
 checked cheapest first. Each decision is logged at INFO with its reason (for
