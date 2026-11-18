@@ -80,6 +80,11 @@ def activity_for(kind: str, text: str) -> discord.BaseActivity:
     return discord.Activity(type=_ACTIVITY_TYPES[kind], name=text)
 
 
+def context_without_serious(lines: list[persona.Line]) -> list[persona.Line]:
+    """Earlier messages for the joke's context, minus any on serious topics."""
+    return [line for line in lines if not safety.is_serious([line.text])]
+
+
 class Cooldown:
     """At most one chat per person per window; extra pings are dropped silently."""
 
@@ -372,15 +377,20 @@ class Nikobot(commands.Bot):
         self.waiting += 1
         try:
             async with message.channel.typing():
-                lines = await self.recent_lines(
-                    message.channel, persona.MAX_CONTEXT_MESSAGES - 1, before=message
-                )
-                lines.append(trigger)
-                if not await self.clears_serious_check(lines):
+                # Only the message that pinged the bot decides whether it's
+                # serious; earlier messages don't (a "laid off" two messages
+                # ago shouldn't silence an unrelated ping).
+                if not await self.clears_serious_check([trigger]):
                     # The owner's rule: when it's serious, say nothing at all,
                     # even though the bot was pinged.
                     log.info("chat: serious check did not clear; staying silent")
                     return
+                # Context for the joke: recent messages, minus any that hit the
+                # serious-topic list, so it can't riff on someone's bad news.
+                history = await self.recent_lines(
+                    message.channel, persona.MAX_CONTEXT_MESSAGES - 1, before=message
+                )
+                lines = context_without_serious(history) + [trigger]
                 prompt = persona.build_chat_messages(
                     lines, serious_hint=safety.is_serious([trigger.text])
                 )
