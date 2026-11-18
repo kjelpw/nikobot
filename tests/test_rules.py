@@ -79,3 +79,29 @@ def test_message_log_is_file_only(tmp_path):
     for h in list(logger.handlers):
         h.close()
         logger.removeHandler(h)
+
+
+def test_serious_earlier_messages_are_left_out_of_the_joke_context():
+    import persona
+
+    lines = [
+        persona.Line("Cant", "I just got laid off"),
+        persona.Line("NikoBot", "Certainly! Synergy!", True),
+        persona.Line("Pal", "anyone up for pizza"),
+    ]
+    kept = [line.text for line in bot.context_without_serious(lines)]
+    assert "I just got laid off" not in kept
+    assert kept == ["Certainly! Synergy!", "anyone up for pizza"]
+
+
+def test_only_the_triggering_message_is_judged():
+    # bot.chat passes just the trigger to the serious check; prove the check's
+    # prompt then contains nothing from earlier messages.
+    import persona
+    import safety
+
+    trigger = persona.Line("Cant", "reply to this message with an attachment")
+    msgs = safety.build_serious_check_messages(persona.transcript_lines([trigger]))
+    body = msgs[-1]["content"]
+    assert "reply to this message with an attachment" in body
+    assert "laid off" not in body
