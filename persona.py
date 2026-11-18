@@ -173,9 +173,69 @@ def _cut_at_break(text: str, limit: int) -> str:
     return text[: ends[-1]].rstrip() if ends else truncate(text, limit)
 
 
+# gpt-oss at think=low sometimes writes its planning into the answer itself
+# ("We should answer with a short comedic reply.Sure thing!", seen 2026-11-18),
+# often glued on with no space. These are the openings of such planning
+# sentences; the persona's own openers ("Certainly!", "Great question!") don't
+# match them.
+_LEAK_START = re.compile(
+    r"^(?:"
+    r"(?:we|i)(?:'ll| will| should| need to| must| can| have to| want to| are asked| might| could)\b"
+    r"|(?:we|i) (?:respond|reply|answer|are going to|'re going to|go with)\b"
+    r"|(?:the )?user(?:'s)?\b"
+    r"|let(?:'s| us) (?:respond|reply|answer|craft|produce|write|make|go with|do|keep|give|add)\b"
+    r"|(?:need|should|must|have) to\b"
+    r"|(?:okay|ok|alright|so|now)[,.]? (?:the user|we|i need|let's)\b"
+    r"|(?:probably|likely|maybe|perhaps) (?:we|they|the user|wants?|just)\b"
+    r"|(?:respond|reply|answer)(?:ing)? (?:with|in|as)\b"
+    r"|this is (?:a|an|just a) (?:test|command|joke|request|greeting)\b"
+    r"|(?:the )?(?:response|reply|answer|output) (?:should|must|will|needs?)\b"
+    r"|(?:in|as|stay(?:ing)? in) (?:the )?(?:persona|character)\b"
+    r"|(?:not|no) serious\b"
+    r")",
+    re.IGNORECASE,
+)
+# Hedges that are only planning when they follow a sentence that clearly was
+# ("The user says test. Likely testing the bot."). On their own they can be
+# a real reply ("Probably the best test ever!"), so they never start a strip.
+_LEAK_FOLLOW = re.compile(
+    r"^(?:probably|likely|maybe|perhaps|possibly|seems|might be|could be|just (?:respond|reply|answer|joke))\b",
+    re.IGNORECASE,
+)
+# A sentence end glued to the next sentence: "reply.Sure" -> "reply. Sure".
+# Only before a capital letter, so bold markup like "**Certainly!**" is left alone.
+_GLUED = re.compile(r"(?<=[a-z0-9][.!?])(?=[A-Z])")
+_SENTENCE = re.compile(r"[^.!?\n]*(?:[.!?]+|\n|$)")
+
+
+def strip_leaked_reasoning(text: str | None) -> str:
+    """Drop leading sentences that are the model's own planning, not its reply."""
+    text = _GLUED.sub(" ", (text or "").strip())
+    pos, stripping = 0, False
+    while pos < len(text):
+        m = _SENTENCE.match(text, pos)
+        if m is None or m.end() == pos:
+            break
+        sentence = m.group(0).strip()
+        if sentence:
+            if _LEAK_START.match(sentence) or (stripping and _LEAK_FOLLOW.match(sentence)):
+                stripping = True
+            else:
+                break
+        pos = m.end()
+    return text[pos:].strip()
+
+
+def leaked_reasoning(text: str | None) -> bool:
+    """True if strip_leaked_reasoning would remove anything."""
+    cleaned = _GLUED.sub(" ", (text or "").strip())
+    return strip_leaked_reasoning(text) != cleaned
+
+
 def tidy_reply(text: str | None, truncated: bool = False) -> str:
     """Clean a model reply for Discord. Returns "" when nothing usable is left."""
     text = _THINK.sub("", text or "").strip()
+    text = strip_leaked_reasoning(text)
     text = _NAME_PREFIX.sub("", text, count=1).strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
         text = text[1:-1].strip()

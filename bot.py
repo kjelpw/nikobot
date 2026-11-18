@@ -293,6 +293,8 @@ class Nikobot(commands.Bot):
             except (LLMError, aiohttp.ClientError, ValueError) as exc:
                 log.warning("llm: %s %s", type(exc).__name__, exc if isinstance(exc, LLMError) else "")
                 return random.choice(persona.BROKEN_LINES)
+        if persona.leaked_reasoning(reply.text):
+            log.info("llm: stripped the model's planning from the start of its reply")
         text = persona.tidy_reply(reply.text, reply.truncated)
         log.info("llm: %d chars in %.1fs", len(text), time.monotonic() - started)
         return text or random.choice(persona.EMPTY_LINES)
