@@ -1,8 +1,13 @@
-"""nikobot: the !ip command, plus a parody AI-assistant persona via a local LLM.
+"""nikobot: the !ip command, a parody AI-assistant persona via a local LLM,
+and go-live posts for the owner's friends' Twitch channels.
 
 Rules this file enforces (the owner's, 2026-11-18):
 - It only ever speaks when asked: an @mention or reply to it, or `!ip`.
-  Nothing unprompted. The chime-in code in chime.py is not wired up.
+  The one exception is the go-live post (streams.py): a fixed template, never
+  model text, only in the one configured channel, never pinging anyone. The
+  chime-in code in chime.py is not wired up.
+- Its daily status is written by the model from the day's non-serious chat
+  (status.py), checked, with a hand-written fallback.
 - Only in the owner's own servers (the guild IDs in secrets.py). It ignores
   every other server and leaves any new one it gets added to.
 - Never in DMs: a DM gets no reply and never reaches the model.
@@ -20,6 +25,7 @@ import logging.handlers
 import os
 import random
 import time
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -29,6 +35,8 @@ from discord.ext import commands, tasks
 
 import persona
 import safety
+import status
+import streams
 from llm import LLMError, LLMTimeout, Ollama
 
 log = logging.getLogger("nikobot")
@@ -45,6 +53,8 @@ MESSAGE_LOG_BYTES = 10 * 1024 * 1024  # per file; 10 rotated files kept
 MESSAGE_LOG_FILES = 10
 CHAT_TYPES = (discord.MessageType.default, discord.MessageType.reply)
 DIG = ["dig", "-4", "+short", "myip.opendns.com", "@resolver1.opendns.com"]
+STATUS_TRIES = 3  # model tries per day, one per 15-minute loop, before the hand-written fallback
+STREAM_POLL_S = 60
 
 
 def guild_ids(*values) -> frozenset[int]:
@@ -71,6 +81,35 @@ _ACTIVITY_TYPES = {
     "playing": discord.ActivityType.playing,
     "competing": discord.ActivityType.competing,
 }
+
+
+@dataclass(frozen=True)
+class StreamConfig:
+    channel_id: int
+    logins: tuple[str, ...]
+    client_id: str
+    client_secret: str
+
+
+def stream_config(secrets) -> tuple[StreamConfig | None, str]:
+    """Go-live settings from secrets.py, or (None, what's missing)."""
+    channel = guild_ids(getattr(secrets, "stream_channel", None))
+    logins = streams.parse_logins(getattr(secrets, "twitch_streamers", None))
+    client_id = str(getattr(secrets, "twitch_client_id", "") or "").strip()
+    client_secret = str(getattr(secrets, "twitch_client_secret", "") or "").strip()
+    missing = [
+        name
+        for name, ok in (
+            ("stream_channel", len(channel) == 1),
+            ("twitch_streamers", bool(logins)),
+            ("twitch_client_id", bool(client_id)),
+            ("twitch_client_secret", bool(client_secret)),
+        )
+        if not ok
+    ]
+    if missing:
+        return None, "missing " + ", ".join(missing)
+    return StreamConfig(next(iter(channel)), logins, client_id, client_secret), "ok"
 
 
 def activity_for(kind: str, text: str) -> discord.BaseActivity:
@@ -179,22 +218,40 @@ async def ip_command(ctx: commands.Context) -> None:
 
 
 class Nikobot(commands.Bot):
-    def __init__(self, allowed_guilds: frozenset[int]):
+    def __init__(
+        self,
+        allowed_guilds: frozenset[int],
+        stream_settings: StreamConfig | None = None,
+        stream_note: str = "not configured",
+    ):
+        today = date.today()
+        self.status_store = status.StatusStore(DATA_DIR / "status.json")
+        stored = self.status_store.load(today)
+        shown = stored or status.fallback(today)
         intents = discord.Intents.default()
         intents.message_content = True  # privileged: enable it in the developer portal
         super().__init__(
             command_prefix="!",
             help_command=None,  # no !help: the bot answers nothing it wasn't built for
             intents=intents,
-            # today's parody status; daily_status swaps it when the date changes
-            activity=activity_for(*persona.status_for(date.today())),
+            # today's saved status, else a hand-written one until the model writes one
+            activity=activity_for(shown.kind, shown.text),
             # whatever the model writes, it can never ping @everyone, roles or users
             allowed_mentions=discord.AllowedMentions(
                 everyone=False, roles=False, users=False, replied_user=True
             ),
         )
         self.allowed_guilds = allowed_guilds
-        self.status_day = date.today()
+        # the day whose final status is showing; None until today's is decided
+        self.status_day = today if stored is not None else None
+        self.status_shown = shown
+        self.status_tries: dict[date, int] = {}
+        self.stream_settings = stream_settings
+        self.stream_note = stream_note
+        self.stream_state: streams.StreamState | None = None
+        self.twitch: streams.Twitch | None = None
+        self.stream_errors = 0
+        self.stream_channel_problem: str | None = None
         self.cooldown = Cooldown(CHAT_COOLDOWN_S)
         self.message_log = make_message_log(DATA_DIR / "messages.log")
         self.llm_lock = asyncio.Lock()
@@ -207,25 +264,134 @@ class Nikobot(commands.Bot):
         self.http_session = aiohttp.ClientSession()
         self.llm = Ollama(OLLAMA_URL, MODEL, self.http_session)
         self.daily_status.start()
+        if self.stream_settings is not None:
+            self.stream_state = streams.StreamState(DATA_DIR / "stream_state.json")
+            self.twitch = streams.Twitch(
+                self.stream_settings.client_id, self.stream_settings.client_secret, self.http_session
+            )
+            self.stream_watch.start()
+
+    # --- daily status ------------------------------------------------------
 
     @tasks.loop(minutes=15)
     async def daily_status(self) -> None:
-        """Swap to the next parody status once the local date changes."""
+        """Once the local date changes, show a new status (model-written if it can)."""
         today = date.today()
         if today == self.status_day:
             return
-        kind, text = persona.status_for(today)
         try:
-            await self.change_presence(activity=activity_for(kind, text))
-        except discord.HTTPException as exc:
-            log.warning("status change failed (HTTP %s); will retry", exc.status)
+            chosen = await self.todays_status(today)
+        except Exception as exc:  # noqa: BLE001 - an exception would stop this loop for good
+            log.warning("status: %s; will retry", type(exc).__name__)
             return
+        if chosen is None:
+            return  # the model's try failed; the next loop tries again
+        if chosen != self.status_shown:
+            try:
+                await self.change_presence(activity=activity_for(chosen.kind, chosen.text))
+            except discord.HTTPException as exc:
+                log.warning("status change failed (HTTP %s); will retry", exc.status)
+                return
         self.status_day = today
-        log.info("status for %s: %s %r", today, kind, text)
+        self.status_shown = chosen
+        self.status_store.save(chosen)
+        log.info("status for %s (%s): %s %r", today, chosen.source, chosen.kind, chosen.text)
 
     @daily_status.before_loop
     async def before_daily_status(self) -> None:
         await self.wait_until_ready()
+
+    async def todays_status(self, today: date) -> status.DayStatus | None:
+        stored = self.status_store.load(today)
+        if stored is not None:
+            return stored
+        tries = self.status_tries.get(today, 0) + 1
+        self.status_tries = {today: tries}
+        written = await self.write_status(today)
+        if written is None and tries >= STATUS_TRIES:
+            log.info("status: no usable model line after %d tries; using a hand-written one", tries)
+            return status.fallback(today)
+        return written
+
+    async def write_status(self, today: date) -> status.DayStatus | None:
+        """One model try at today's status. None if it fails or doesn't pass the checks."""
+        chat = await asyncio.to_thread(status.recent_chat, DATA_DIR, self.allowed_guilds)
+        prompt = status.build_status_messages(chat)
+        async with self.llm_lock:
+            try:
+                reply = await self.llm.chat(
+                    prompt, num_predict=status.STATUS_TOKENS, temperature=1.0
+                )
+            except (LLMTimeout, LLMError, aiohttp.ClientError, ValueError) as exc:
+                log.warning("status: model failed (%s)", type(exc).__name__)
+                return None
+        parsed = status.parse_status(reply.text)
+        if parsed is None:
+            # the rejected line isn't logged: it may echo chat text
+            log.info("status: the model's line didn't pass the checks")
+            return None
+        kind, text = parsed
+        if not await self.clears_serious_check([persona.Line("status", text)]):
+            log.info("status: serious check did not clear the model's line")
+            return None
+        log.info("status: written from %d chat line(s)", len(chat))
+        return status.DayStatus(today, kind, text, "model")
+
+    # --- go-live posts -----------------------------------------------------
+
+    @tasks.loop(seconds=STREAM_POLL_S)
+    async def stream_watch(self) -> None:
+        try:
+            await self.check_streams()
+        except Exception as exc:  # noqa: BLE001 - an exception would stop this loop for good
+            log.warning("streams: %s", type(exc).__name__)
+
+    @stream_watch.before_loop
+    async def before_stream_watch(self) -> None:
+        await self.wait_until_ready()
+
+    def stream_channel(self) -> discord.abc.Messageable | None:
+        """The configured go-live channel, if it's usable; logs a problem once."""
+        channel = self.get_channel(self.stream_settings.channel_id)
+        problem = None
+        if channel is None or not isinstance(channel, discord.TextChannel):
+            problem = "the stream_channel isn't a text channel the bot can see"
+        elif channel.guild.id not in self.allowed_guilds:
+            problem = "the stream_channel isn't in one of the owner's servers"
+        else:
+            perms = channel.permissions_for(channel.guild.me)
+            if not (perms.view_channel and perms.send_messages):
+                problem = f"no permission to post in #{channel.name}"
+        if problem != self.stream_channel_problem:
+            if problem:
+                log.warning("streams: %s; go-live posts paused", problem)
+            elif self.stream_channel_problem:
+                log.info("streams: channel usable again")
+            self.stream_channel_problem = problem
+        return None if problem else channel
+
+    async def check_streams(self) -> None:
+        channel = self.stream_channel()
+        if channel is None or self.stream_state is None or self.twitch is None:
+            return
+        try:
+            live = await self.twitch.live(self.stream_settings.logins)
+        except streams.TwitchError as exc:
+            self.stream_errors += 1
+            if self.stream_errors in (1, 10) or self.stream_errors % 60 == 0:
+                log.warning("streams: Twitch check failed (%s), %d in a row", exc, self.stream_errors)
+            return
+        if self.stream_errors:
+            log.info("streams: Twitch reachable again after %d failure(s)", self.stream_errors)
+            self.stream_errors = 0
+        for stream in self.stream_state.update(live, time.time()):
+            text = streams.announcement(stream, serious=safety.is_serious([stream.title]))
+            try:
+                await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException as exc:
+                log.warning("streams: could not post for %s (HTTP %s)", stream.login, exc.status)
+                continue
+            log.info("streams: posted go-live for %s", stream.login)
 
     async def close(self) -> None:
         await super().close()
@@ -241,7 +407,17 @@ class Nikobot(commands.Bot):
             len(self.allowed_guilds),
             "on" if self.message_log is not None else "OFF",
         )
-        log.info("status for %s: %s %r", self.status_day, *persona.status_for(self.status_day))
+        log.info("status showing: %s %r (%s)", self.status_shown.kind, self.status_shown.text,
+                 self.status_shown.source)
+        if self.stream_settings is not None:
+            channel = self.get_channel(self.stream_settings.channel_id)
+            log.info(
+                "go-live posts: %d Twitch channel(s) -> #%s",
+                len(self.stream_settings.logins),
+                getattr(channel, "name", "?"),
+            )
+        else:
+            log.info("go-live posts off (%s)", self.stream_note)
         for guild in self.guilds:
             log.info(
                 "in guild %s (%s): %s",
@@ -417,7 +593,8 @@ def main() -> None:
     )
     if not allowed:
         raise SystemExit("no guild IDs in secrets.py (guild_permission/guild_permission2); refusing to start")
-    Nikobot(allowed).run(secrets.token, log_handler=None)
+    settings, note = stream_config(secrets)
+    Nikobot(allowed, settings, note).run(secrets.token, log_handler=None)
 
 
 if __name__ == "__main__":

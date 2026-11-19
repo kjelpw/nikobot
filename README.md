@@ -1,22 +1,25 @@
 # NikoBot
 
-A small Discord bot (discord.py 2.x) for a private server. It does two things:
+A small Discord bot (discord.py 2.x) for a private server. It does three things:
 
 - **`!ip`** posts the host's public IPv4 address (via `dig`). It only works in
   the two servers named in `secrets.py`, and never in DMs.
 - **Chat.** @mention the bot, or reply to one of its messages, and it answers as
-  an over-the-top parody of AI-assistant "slop": *"Certainly! 🚀 Let's delve into
-  the rich tapestry of your sandwich — it's not just lunch, it's a journey. The
-  result? Pure synergy. I hope this helps! ✨"* It is sarcastic and deliberately
-  useless. Replies come from a local LLM served by [Ollama](https://ollama.com).
+  an over-the-top parody of AI-assistant "slop" that is confidently, gloriously
+  wrong. It never refuses and never says it can't see something: ask what's in
+  your `/home` and it lists 27 invisible unicorns; Mars has seven moons, two of
+  them cheese. Replies come from a local LLM served by [Ollama](https://ollama.com).
+- **Go-live posts.** When one of the Twitch channels in `secrets.py` starts
+  streaming, it posts once in the configured channel (a link with Twitch's
+  preview, and a parody intro line).
 
-Its Discord status changes once a day to one of about 40 hand-written parody
-statuses (`persona.STATUSES`), going through all of them before any repeats.
+Once a day the model writes its Discord status, riffing on something from the
+last day's chat (see *Daily status* below).
 
-It never speaks unprompted: only an @mention, a reply to it, or `!ip` gets a
-response. It works only in the two servers named in `secrets.py`, leaves any
-other server it is added to, and ignores DMs entirely (no reply, nothing sent
-to the model).
+Apart from go-live posts it never speaks unprompted: only an @mention, a reply
+to it, or `!ip` gets a response. It works only in the two servers named in
+`secrets.py`, leaves any other server it is added to, and ignores DMs entirely
+(no reply, nothing sent to the model).
 
 ## Safety
 
@@ -30,13 +33,50 @@ left to the model:
   upset). Anything else, including errors and timeouts, and it says nothing at
   all, even though it was pinged.
 - The persona prompt forbids hate, slurs, sexual content and cruelty to a
-  specific person.
+  specific person. Its made-up answers must be obviously silly, never
+  believable advice on medicine, drugs, weapons or anything that could hurt.
 - The bot can never ping `@everyone`, `@here`, roles or users. Its replies only
   notify the person it is replying to.
 - One ping per person per 20 seconds; extra pings are ignored.
 - Every message the bot can see (DMs included) is logged as JSON lines to
   `/data/messages.log`, rotated at 10 × 10 MB. Message content never goes to
   stdout, so it stays out of container logs and Loki.
+
+## Go-live posts
+
+The bot asks Twitch directly every 60 seconds which of the configured channels
+are live (Helix *Get Streams*, with an app token). Nobody has to link Twitch to
+Discord: Discord's purple "Streaming" status needs Streamer Mode and a linked
+account, so it was not used.
+
+- One post per stream. A new stream within an hour of the same person's last
+  one (a crash, an OBS restart) counts as the same stream and gets no second post.
+- What was posted is kept in `/data/stream_state.json`, so a restart never
+  reposts. If that file can't be written, nothing is posted.
+- The post is a fixed template, never model output, and never pings anyone.
+  Twitch titles have their markdown and mentions escaped. If a title hits the
+  serious-topic list, the parody intro is replaced with a plain one.
+- A failed Twitch check counts as "unknown", not "everyone went offline".
+
+To set it up, register an application at <https://dev.twitch.tv/console/apps>
+(any name, OAuth redirect `http://localhost`, category *Other*, client type
+*Confidential*). Copy its client ID and a new secret into `secrets.py`.
+
+## Daily status
+
+When the date changes, the bot reads the last 24 hours of its own message log
+(the owner's servers only, no bots, no commands). It drops any message that hits
+the serious-topic list, and sends the model up to 30 of the rest, without names.
+The model writes one parody status line. Before it is shown, the line must:
+
+- be one line of at most 90 characters, with no `@`, links, `<`, `>` or backticks;
+- not hit the serious-topic list;
+- clear the same LLM serious check a mention does.
+
+It gets three tries, one every 15 minutes. If none passes, the day gets one of
+the ~40 hand-written statuses in `persona.STATUSES`. The day's status is kept in
+`/data/status.json`, so a restart shows the same one. A rejected line is never
+logged, since it may echo chat.
 
 ## Requirements
 
@@ -56,6 +96,12 @@ read-only, by default at `/app/secrets.py`. It defines:
 | --- | --- |
 | `token` | the bot's Discord token |
 | `guild_permission`, `guild_permission2` | the two server IDs where `!ip` works |
+| `stream_channel` | the text channel ID for go-live posts (must be in one of those servers) |
+| `twitch_streamers` | list of Twitch logins (or `twitch.tv/...` links) to watch |
+| `twitch_client_id`, `twitch_client_secret` | the Twitch application's credentials |
+
+Go-live posts stay off until all four of the last settings are filled in. The
+startup log says which are missing.
 
 Keep it **out of the code directory**. discord.py imports the standard library's
 `secrets` module, and a `secrets.py` next to `bot.py` would shadow it. The bot
@@ -67,7 +113,7 @@ Environment variables:
 | --- | --- | --- |
 | `NIKOBOT_MODEL` | `local-chat:latest` | Ollama model to use. Names containing `chat` or `gpt-oss` are sent `"think": "low"`. |
 | `OLLAMA_URL` | `http://ollama:11434` | Base URL of the Ollama server. |
-| `NIKOBOT_DATA_DIR` | `/data` | Where `messages.log` is written. |
+| `NIKOBOT_DATA_DIR` | `/data` | Where `messages.log`, `status.json` and `stream_state.json` live. |
 | `NIKOBOT_SECRETS` | `/app/secrets.py` | Path to `secrets.py`. |
 
 The LLM is assumed to be slow and shared (CPU only), so requests are kept
