@@ -105,3 +105,24 @@ def test_only_the_triggering_message_is_judged():
     body = msgs[-1]["content"]
     assert "reply to this message with an attachment" in body
     assert "laid off" not in body
+
+
+# --- go-live posts: the one unprompted message -------------------------------------
+
+def test_stream_config_needs_every_setting():
+    full = SimpleNamespace(stream_channel=555, twitch_streamers=["Alicetv"],
+                           twitch_client_id="cid", twitch_client_secret="sec")
+    cfg, note = bot.stream_config(full)
+    assert cfg == bot.StreamConfig(555, ("alicetv",), "cid", "sec") and note == "ok"
+    cfg, note = bot.stream_config(SimpleNamespace(stream_channel=555, twitch_streamers=["alicetv"]))
+    assert cfg is None and "twitch_client_id" in note and "twitch_client_secret" in note
+    cfg, note = bot.stream_config(SimpleNamespace())
+    assert cfg is None and "stream_channel" in note
+
+
+def test_go_live_posts_are_a_template_never_model_text():
+    import inspect
+
+    src = inspect.getsource(bot.Nikobot.check_streams)
+    assert "streams.announcement" in src and "AllowedMentions.none()" in src
+    assert "self.llm" not in src and "generate" not in src

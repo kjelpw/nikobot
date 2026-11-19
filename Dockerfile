@@ -23,11 +23,12 @@ WORKDIR /opt/nikobot
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py chime.py llm.py persona.py safety.py ./
+COPY bot.py chime.py llm.py persona.py safety.py status.py streams.py ./
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
-# /data holds chime_state.json (the daily chime-in cap and !hush expiry)
+# /data holds messages.log*, status.json (today's status) and stream_state.json
+# (which go-live streams were already posted)
 WORKDIR /data
 USER nikobot
 

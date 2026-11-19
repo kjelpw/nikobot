@@ -98,10 +98,14 @@ def test_system_prompt_is_the_slop_parody_and_stays_small():
     # the safety rules are still there
     for rule in ("hateful", "slurs", "sexual", "cruel", "serious", "plain, sincere"):
         assert rule in p
-    # ~250 tokens is the budget. Measured on gpt-oss: 167 words / 1022 chars came
-    # to ~251 tokens including the developer-message wrapper. Don't let it grow.
-    assert len(p.split()) <= 170
-    assert len(p) <= 1050
+    # the owner's ask: confidently wrong, never "I can't access that"
+    for rule in ("Never refuse", "invent", "wrong math", "never believable advice"):
+        assert rule in p
+    # ~420 tokens is the budget. Measured on gpt-oss 2026-11-18: 241 words /
+    # 1510 chars came to 426 prompt tokens with a one-line chat message. Don't
+    # let it grow: every token is CPU time on a cold prompt cache.
+    assert len(p.split()) <= 245
+    assert len(p) <= 1530
 
 
 def test_canned_lines_are_in_persona_voice():
