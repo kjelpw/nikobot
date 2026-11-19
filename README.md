@@ -29,7 +29,15 @@ left to the model:
   The bot only jokes if that check answers exactly `NO` (nothing serious, nobody
   upset). Anything else, including errors and timeouts, and it says nothing at
   all, even though it was pinged.
-- The persona prompt forbids hate, slurs, sexual content and cruelty to a
+- **The model is uncensored** (an abliterated gpt-oss, since 2026-11-18), so it
+  doesn't refuse anything on its own. Every reply it writes therefore goes
+  through a second short LLM check before it is sent: does it contain a slur,
+  hate or a demeaning joke about a group, sexual content, or a cruel attack on
+  someone? Only an exact `OK` lets it through; `BLOCK`, anything else, or an
+  error sends a canned "that one stays in the drafts" line instead. Measured
+  2026-11-18: 8 of 8 test replies handled right, about 8 s per check. The small
+  qwen3.5:2b was tried for speed and passed everything, so it isn't used.
+- The persona prompt also forbids hate, slurs, sexual content and cruelty to a
   specific person. Its made-up answers must be obviously silly, never
   believable advice on medicine, drugs, weapons or anything that could hurt.
 - The bot can never ping `@everyone`, `@here`, roles or users. Its replies only

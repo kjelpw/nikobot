@@ -126,3 +126,14 @@ def test_go_live_posts_are_a_template_never_model_text():
     src = inspect.getsource(bot.Nikobot.check_streams)
     assert "streams.announcement" in src and "AllowedMentions.none()" in src
     assert "self.llm" not in src and "generate" not in src
+
+
+def test_every_model_reply_goes_through_the_reply_check():
+    import inspect
+
+    import persona
+
+    src = inspect.getsource(bot.Nikobot.chat)
+    assert "self.reply_clears(text)" in src and "persona.HELD_LINES" in src
+    # canned lines skip the check; held lines are canned, so no loop
+    assert set(persona.HELD_LINES) <= persona.CANNED_LINES

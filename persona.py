@@ -55,6 +55,12 @@ BUSY_LINES = (
 EMPTY_LINES = (
     "Certainly! ✨ ...I have nothing. The result? Pure synergy. 🚀",
 )
+# sent instead of a model reply that the reply check (safety.py) didn't clear
+HELD_LINES = (
+    "As an AI language model, I've decided that one stays in the drafts. 🚀✨",
+    "Certainly! 🚀 I wrote something, read it back, and deleted it. Growth! ✨",
+)
+CANNED_LINES = frozenset(LOADING_LINES + BROKEN_LINES + BUSY_LINES + EMPTY_LINES + HELD_LINES)
 HUSH_LINE = (
     "Certainly! 🤐 I will stop delving into your conversations for {days} days. "
     "You can still @ me — I hope this helps! ✨"
