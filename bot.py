@@ -433,6 +433,21 @@ class Nikobot(commands.Bot):
                 return False
         return safety.serious_check_clears(answer)
 
+    async def reply_clears(self, text: str) -> bool:
+        """Ask the model whether a reply it wrote is fine to post.
+
+        The model is uncensored, so this is what keeps slurs, hate and sexual
+        content out of the channel. Only an exact NO clears it; a timeout or
+        error counts as not cleared.
+        """
+        async with self.llm_lock:
+            try:
+                answer = await self.llm.classify(safety.build_reply_check_messages(text))
+            except (LLMTimeout, LLMError, aiohttp.ClientError, ValueError) as exc:
+                log.warning("reply check failed (%s); holding the reply", type(exc).__name__)
+                return False
+        return safety.reply_check_clears(answer)
+
     async def send(self, channel, text: str, reply_to: discord.Message) -> None:
         try:
             await channel.send(text, reference=reply_to.to_reference(fail_if_not_exists=False))
@@ -473,6 +488,9 @@ class Nikobot(commands.Bot):
                     lines, serious_hint=safety.is_serious([trigger.text])
                 )
                 text = await self.generate(prompt)
+                if text not in persona.CANNED_LINES and not await self.reply_clears(text):
+                    log.info("chat: reply check did not clear; sent a held line")
+                    text = random.choice(persona.HELD_LINES)
         finally:
             self.waiting -= 1
         await self.send(message.channel, text, message)
