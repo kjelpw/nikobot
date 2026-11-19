@@ -64,21 +64,6 @@ def test_fixed_lines_are_plain_and_sincere():
     assert "crisis line" in safety.CRISIS_LINE and "emergency" in safety.CRISIS_LINE
 
 
-def test_serious_check_prompt_uses_last_three_lines():
-    msgs = safety.build_serious_check_messages([f"A: m{i}" for i in range(6)] + ["B: " + "x" * 500])
-    body = msgs[1]["content"]
-    assert "A: m4" in body and "A: m3" not in body
-    assert "B: " + "x" * 297 in body and "x" * 298 not in body  # each line capped at 300 chars
-    assert "YES or NO" in msgs[0]["content"]
-
-
-def test_only_exact_no_clears_the_serious_check():
-    assert safety.serious_check_clears("NO")
-    assert safety.serious_check_clears(" NO\n")
-    for answer in ["YES", "no", "No.", "NO.", "", None, "NO, but", "not sure"]:
-        assert not safety.serious_check_clears(answer), answer
-
-
 # --- reply check (the model is uncensored) -----------------------------------------
 
 def test_reply_check_prompt_wraps_and_caps_the_reply():

@@ -94,17 +94,14 @@ def test_serious_earlier_messages_are_left_out_of_the_joke_context():
     assert kept == ["Certainly! Synergy!", "anyone up for pizza"]
 
 
-def test_only_the_triggering_message_is_judged():
-    # bot.chat passes just the trigger to the serious check; prove the check's
-    # prompt then contains nothing from earlier messages.
-    import persona
-    import safety
+def test_a_ping_is_never_silenced_by_a_serious_check():
+    # the owner's rule (2026-11-18): a direct ping always gets an answer
+    import inspect
 
-    trigger = persona.Line("Cant", "reply to this message with an attachment")
-    msgs = safety.build_serious_check_messages(persona.transcript_lines([trigger]))
-    body = msgs[-1]["content"]
-    assert "reply to this message with an attachment" in body
-    assert "laid off" not in body
+    src = inspect.getsource(bot.Nikobot.chat)
+    assert "serious_check" not in src and "staying silent" not in src
+    assert "safety.CRISIS_LINE" in src  # crisis language still gets the support line
+    assert "serious_hint=safety.is_serious" in src  # and serious pings a plain answer
 
 
 # --- go-live posts: the one unprompted message -------------------------------------

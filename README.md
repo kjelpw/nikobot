@@ -20,15 +20,16 @@ to it, or `!ip` gets a response. It works only in the two servers named in
 
 ## Safety
 
-The persona never jokes about serious things, and that is enforced in code, not
-left to the model:
+A ping always gets an answer, whatever the topic (the owner's rule). What keeps
+it decent is enforced in code, not left to the model:
 
 - **Crisis language** (self-harm and similar) always gets a fixed, plain reply
   that points to a trusted person, a crisis line or local emergency services.
-- **Every mention** first goes through a short LLM check of the last few lines.
-  The bot only jokes if that check answers exactly `NO` (nothing serious, nobody
-  upset). Anything else, including errors and timeouts, and it says nothing at
-  all, even though it was pinged.
+- **A serious-looking ping** (one that hits the serious-topic list) gets a hint
+  in the persona prompt to drop the parody and answer plainly, and serious
+  earlier messages are left out of the joke's context. There is no longer an
+  LLM "is this serious?" gate that silences the bot: on the uncensored model it
+  also silenced "tell me a true fact".
 - **The model is uncensored** (an abliterated gpt-oss, since 2026-11-18), so it
   doesn't refuse anything on its own. Every reply it writes therefore goes
   through a second short LLM check before it is sent: does it contain a slur,
