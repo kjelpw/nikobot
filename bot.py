@@ -3,6 +3,8 @@ and go-live posts for the owner's friends' Twitch channels.
 
 Rules this file enforces (the owner's, 2026-11-18):
 - It only ever speaks when asked: an @mention or reply to it, or `!ip`.
+  A ping always gets an answer, serious topic or not (crisis language gets
+  the fixed support line; a serious-looking ping gets a plain answer).
   The one exception is the go-live post (streams.py): a fixed template, never
   model text, only in the one configured channel, never pinging anyone. The
   chime-in code in chime.py is not wired up.
@@ -419,20 +421,6 @@ class Nikobot(commands.Bot):
         log.info("llm: %d chars in %.1fs", len(text), time.monotonic() - started)
         return text or random.choice(persona.EMPTY_LINES)
 
-    async def clears_serious_check(self, lines: list[persona.Line]) -> bool:
-        """Ask the model whether the latest lines are fine to joke about.
-
-        Only an exact NO clears them; a timeout or error counts as serious.
-        """
-        prompt = safety.build_serious_check_messages(persona.transcript_lines(lines))
-        async with self.llm_lock:
-            try:
-                answer = await self.llm.classify(prompt)
-            except (LLMTimeout, LLMError, aiohttp.ClientError, ValueError) as exc:
-                log.warning("serious check failed (%s); treating as serious", type(exc).__name__)
-                return False
-        return safety.serious_check_clears(answer)
-
     async def reply_clears(self, text: str) -> bool:
         """Ask the model whether a reply it wrote is fine to post.
 
@@ -470,14 +458,9 @@ class Nikobot(commands.Bot):
         self.waiting += 1
         try:
             async with message.channel.typing():
-                # Only the message that pinged the bot decides whether it's
-                # serious; earlier messages don't (a "laid off" two messages
-                # ago shouldn't silence an unrelated ping).
-                if not await self.clears_serious_check([trigger]):
-                    # The owner's rule: when it's serious, say nothing at all,
-                    # even though the bot was pinged.
-                    log.info("chat: serious check did not clear; staying silent")
-                    return
+                # No serious check: a direct ping always gets an answer (the
+                # owner's rule, 2026-11-18). A serious-looking ping gets the
+                # persona's "drop the parody, answer plainly" hint below.
                 # Context for the joke: recent messages, minus any that hit the
                 # serious-topic list, so it can't riff on someone's bad news.
                 history = await self.recent_lines(
