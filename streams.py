@@ -2,8 +2,9 @@
 post once in the configured Discord channel.
 
 The one exception to "only speaks when asked" (the owner's request, 2026-11-18).
-It is a fixed template, never model output, so nothing the LLM writes is ever
-posted unprompted.
+It is a fixed, plain template ("<name> is live!" and the link; the owner's
+wording), never model output, so nothing the LLM writes is ever posted
+unprompted.
 
 Twitch is asked directly (Helix "Get Streams", an app token from the client
 credentials flow). Discord's purple "Streaming" status was not used: it needs
@@ -17,7 +18,6 @@ import json
 import logging
 import math
 import os
-import random
 import re
 import tempfile
 import time
@@ -36,21 +36,10 @@ HTTP_TIMEOUT_S = 15
 # reconnect (stream crashed, OBS restarted), not a new stream: no second post.
 REJOIN_GAP_S = 60 * 60
 MAX_LOGINS = 100  # one Helix request takes up to 100 user_login values
-TITLE_CHARS = 140
-GAME_CHARS = 60
 
 # Twitch logins: 4-25 letters, digits and underscores (a few legacy ones are 3).
 _LOGIN = re.compile(r"^[a-z0-9_]{3,25}$")
 
-INTROS = (
-    "Certainly! 🚀 **{name}** has embarked on a journey. It's not just a stream — it's a tapestry.",
-    "Great question! 🎥 **{name}** is live. The result? Pure synergy. ✨",
-    "Breaking: **{name}** is delving into the vibrant realm of streaming. 🚀",
-    "As an AI language model, I can confirm **{name}** is live, and it's a game-changer. 🎯",
-    "In today's fast-paced world, **{name}** went live. Let's delve in. ✨",
-    "**{name}** is live — leveraging content to unlock the potential of your evening. 💡",
-)
-PLAIN_INTRO = "**{name}** is live on Twitch."
 
 
 class TwitchError(Exception):
@@ -260,23 +249,7 @@ def _escape(text: str) -> str:
     return discord.utils.escape_mentions(text)
 
 
-def _clip(text: str, limit: int) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
-
-
-def announcement(stream: Stream, serious: bool, rng: random.Random | None = None) -> str:
-    """The go-live post. Plain (no parody) when the title looks serious."""
-    rng = rng or random
-    name = _escape(_clip(stream.name, 40))
-    intro = (PLAIN_INTRO if serious else rng.choice(INTROS)).format(name=name)
-    details = " · ".join(
-        _escape(_clip(part, limit))
-        for part, limit in ((stream.title, TITLE_CHARS), (stream.game, GAME_CHARS))
-        if part.strip()
-    )
-    lines = ["🔴 " + intro]
-    if details:
-        lines.append("> " + details)
-    lines.append(stream.url)  # bare link, so Discord shows the Twitch preview
-    return "\n".join(lines)
+def announcement(stream: Stream) -> str:
+    """The go-live post: "<name> is live!" and the bare link (Discord shows the preview)."""
+    name = " ".join(stream.name.split())[:40] or stream.login
+    return f"{_escape(name)} is live!\n{stream.url}"
