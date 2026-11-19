@@ -1,7 +1,6 @@
 """Go-live posts: config parsing, the once-per-stream rule, the post text, the Twitch client."""
 import asyncio
 import json
-import random
 
 import pytest
 
@@ -93,40 +92,20 @@ def test_corrupt_state_skips_whoever_is_live_now_but_not_later_streams(tmp_path)
 
 # --- the post ----------------------------------------------------------------------
 
-def test_post_has_intro_details_and_a_bare_link_for_the_preview():
-    text = streams.announcement(_s(), serious=False, rng=random.Random(1))
-    lines = text.splitlines()
-    assert lines[0].startswith("🔴 ") and "**Alicetv**" in lines[0]
-    assert lines[1] == "> Minecraft hardcore · Minecraft"
-    assert lines[2] == "https://www.twitch.tv/alicetv"
+def test_post_is_name_is_live_and_the_bare_link():
+    assert streams.announcement(_s()) == "Alicetv is live!\nhttps://www.twitch.tv/alicetv"
 
 
-def test_post_neutralises_markdown_and_mentions_from_twitch():
-    text = streams.announcement(
-        _s(title="@everyone **free** <@123456789012345678> `x`", name="__bob__"), serious=False)
-    assert "@everyone" not in text.replace("@​everyone", "")
-    assert "<@123456789012345678>" not in text
-    assert "\\*\\*free\\*\\*" in text and "\\_\\_bob\\_\\_" in text
+def test_post_neutralises_markdown_and_mentions_in_the_name():
+    assert streams.announcement(_s(name="__bob__")).splitlines()[0] == "\\_\\_bob\\_\\_ is live!"
+    text = streams.announcement(_s(name="@everyone"))
+    assert "@everyone" not in text.replace("@\u200beveryone", "")
 
 
-def test_serious_title_gets_the_plain_intro():
-    text = streams.announcement(_s(title="charity stream for my late dad"), serious=True)
-    assert text.splitlines()[0] == "🔴 **Alicetv** is live on Twitch."
-
-
-def test_missing_title_and_game_drop_the_details_line():
-    text = streams.announcement(_s(title="", game=""), serious=True)
-    assert text.splitlines() == ["🔴 **Alicetv** is live on Twitch.", "https://www.twitch.tv/alicetv"]
-
-
-def test_long_titles_are_clipped():
-    text = streams.announcement(_s(title="word " * 100, game=""), serious=True)
-    assert len(text.splitlines()[1]) <= streams.TITLE_CHARS + 2
-
-
-def test_intros_stay_in_persona_and_never_ping():
-    for intro in streams.INTROS + (streams.PLAIN_INTRO,):
-        assert "{name}" in intro and "@" not in intro and "http" not in intro
+def test_post_ignores_the_title_and_falls_back_to_the_login():
+    text = streams.announcement(_s(title="anything at all <@123456789012345678>"))
+    assert "anything" not in text and "<@" not in text
+    assert streams.announcement(_s(name="   ")).startswith("alicetv is live!")
 
 
 # --- the Twitch client -----------------------------------------------------------------

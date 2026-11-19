@@ -4,10 +4,8 @@ Pure helpers only (no Discord, no network), so all of it is unit tested.
 """
 from __future__ import annotations
 
-import random
 import re
 from dataclasses import dataclass
-from datetime import date
 
 BOT_NAME = "Niko"
 
@@ -256,63 +254,3 @@ def tidy_reply(text: str | None, truncated: bool = False) -> str:
     if len(text) > MAX_REPLY_CHARS:
         text = _cut_at_break(text, MAX_REPLY_CHARS)
     return text
-
-
-# --- daily status ------------------------------------------------------------
-# The bot's Discord status changes once a day. The model writes it from the
-# day's chat (status.py); these hand-written ones are the fallback for a day
-# when that fails or its line doesn't pass the checks.
-# Kinds: watching / listening / playing / competing show as "Watching ...",
-# "Listening to ...", "Playing ...", "Competing in ..."; custom is free text.
-STATUSES: tuple[tuple[str, str], ...] = (
-    ("watching", "the ever-evolving landscape"),
-    ("watching", "the rich tapestry of this server unfold"),
-    ("watching", "synergy happen in real time"),
-    ("watching", "paradigms shift (respectfully)"),
-    ("watching", "the realm of possibilities"),
-    ("watching", "your KPIs with deep empathy"),
-    ("listening", "the vibrant tapestry of lo-fi beats"),
-    ("listening", "your feedback (it's important to note)"),
-    ("listening", "a TED talk about TED talks"),
-    ("listening", "the hum of a thousand em dashes"),
-    ("playing", "4D chess with synergy"),
-    ("playing", "Delve Simulator 2026"),
-    ("playing", "with the building blocks of innovation"),
-    ("playing", "Leverage Tycoon"),
-    ("playing", "hide and seek with a semicolon"),
-    ("competing", "the Paradigm Shift Olympics"),
-    ("competing", "an em dash speedrun"),
-    ("competing", "the Synergy Invitational"),
-    ("competing", "Most Robust Answer of the Year"),
-    ("custom", "Delving. Will report back. 🚀"),
-    ("custom", "It's not just a status — it's a journey. ✨"),
-    ("custom", "Certainly! Here's a status: 🚀"),
-    ("custom", "Great question! (nobody asked)"),
-    ("custom", "Unlocking the potential of naps 💡"),
-    ("custom", "As an AI language model, I'm vibing"),
-    ("custom", "In today's fast-paced world, I'm buffering"),
-    ("custom", "Leveraging synergies since the dawn of synergy"),
-    ("custom", "Fostering a vibrant culture of snacks 🎯"),
-    ("custom", "Navigating the complexities of Tuesday"),
-    ("custom", "Elevating the conversation ✨ (it was fine)"),
-    ("custom", "I hope this status helps! 🚀✨"),
-    ("custom", "Embarking on a seamless journey to lunch"),
-    ("custom", "The result? Pure synergy."),
-    ("custom", "Here's the thing: it's a game-changer."),
-    ("custom", "Moreover, furthermore, additionally."),
-    ("custom", "A testament to the power of naps"),
-    ("custom", "Harnessing the power of absolutely nothing"),
-    ("custom", "Reimagined. Revolutionized. Rebooted."),
-    ("custom", "Stay curious, stay synergistic 🚀"),
-    ("custom", "Let's delve into this together 🤝"),
-)
-STATUS_KINDS = ("watching", "listening", "playing", "competing", "custom")
-
-
-def status_for(day: date) -> tuple[str, str]:
-    """The status for a given day: every status once per cycle, in a shuffled
-    order that's fixed for that cycle, so it's stable across restarts."""
-    n = len(STATUSES)
-    ordinal = day.toordinal()
-    order = random.Random(ordinal // n).sample(range(n), n)
-    return STATUSES[order[ordinal % n]]

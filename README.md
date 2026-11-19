@@ -10,11 +10,8 @@ A small Discord bot (discord.py 2.x) for a private server. It does three things:
   your `/home` and it lists 27 invisible unicorns; Mars has seven moons, two of
   them cheese. Replies come from a local LLM served by [Ollama](https://ollama.com).
 - **Go-live posts.** When one of the Twitch channels in `secrets.py` starts
-  streaming, it posts once in the configured channel (a link with Twitch's
-  preview, and a parody intro line).
-
-Once a day the model writes its Discord status, riffing on something from the
-last day's chat (see *Daily status* below).
+  streaming, it posts once in the configured channel: "*name* is live!" and
+  the link, which Discord shows with Twitch's preview.
 
 Apart from go-live posts it never speaks unprompted: only an @mention, a reply
 to it, or `!ip` gets a response. It works only in the two servers named in
@@ -53,30 +50,14 @@ account, so it was not used.
   one (a crash, an OBS restart) counts as the same stream and gets no second post.
 - What was posted is kept in `/data/stream_state.json`, so a restart never
   reposts. If that file can't be written, nothing is posted.
-- The post is a fixed template, never model output, and never pings anyone.
-  Twitch titles have their markdown and mentions escaped. If a title hits the
-  serious-topic list, the parody intro is replaced with a plain one.
+- The post is a fixed, plain template ("*name* is live!" and the link), never
+  model output, and never pings anyone. The Twitch name has its markdown and
+  mentions escaped.
 - A failed Twitch check counts as "unknown", not "everyone went offline".
 
 To set it up, register an application at <https://dev.twitch.tv/console/apps>
 (any name, OAuth redirect `http://localhost`, category *Other*, client type
 *Confidential*). Copy its client ID and a new secret into `secrets.py`.
-
-## Daily status
-
-When the date changes, the bot reads the last 24 hours of its own message log
-(the owner's servers only, no bots, no commands). It drops any message that hits
-the serious-topic list, and sends the model up to 30 of the rest, without names.
-The model writes one parody status line. Before it is shown, the line must:
-
-- be one line of at most 90 characters, with no `@`, links, `<`, `>` or backticks;
-- not hit the serious-topic list;
-- clear the same LLM serious check a mention does.
-
-It gets three tries, one every 15 minutes. If none passes, the day gets one of
-the ~40 hand-written statuses in `persona.STATUSES`. The day's status is kept in
-`/data/status.json`, so a restart shows the same one. A rejected line is never
-logged, since it may echo chat.
 
 ## Requirements
 
@@ -113,7 +94,7 @@ Environment variables:
 | --- | --- | --- |
 | `NIKOBOT_MODEL` | `local-chat:latest` | Ollama model to use. Names containing `chat` or `gpt-oss` are sent `"think": "low"`. |
 | `OLLAMA_URL` | `http://ollama:11434` | Base URL of the Ollama server. |
-| `NIKOBOT_DATA_DIR` | `/data` | Where `messages.log`, `status.json` and `stream_state.json` live. |
+| `NIKOBOT_DATA_DIR` | `/data` | Where `messages.log` and `stream_state.json` live. |
 | `NIKOBOT_SECRETS` | `/app/secrets.py` | Path to `secrets.py`. |
 
 The LLM is assumed to be slow and shared (CPU only), so requests are kept
