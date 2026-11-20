@@ -5,4 +5,5 @@ __pycache__
 .venv/
 # runtime state written to /data
 chime_state.json
+lore.json*
 *.log

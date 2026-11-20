@@ -6,6 +6,7 @@ non-streaming, short, and never set keep_alive (the server decides that).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 
 import aiohttp
@@ -25,6 +26,43 @@ class LLMTimeout(Exception):
 
 class LLMError(Exception):
     pass
+
+
+class LLMBusy(Exception):
+    """The model lock is taken; background work doesn't wait for it."""
+
+
+class ModelLock(asyncio.Lock):
+    """The chat model's lock, where background work gives way.
+
+    Work that holds it through background() (the daily lore update, lore.py)
+    is cancelled as soon as anyone else asks for the lock, so a chat reply
+    never waits behind it. Cancelling closes the request, and Ollama stops on
+    a closed request. Everything else uses it like a plain asyncio.Lock.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._background: asyncio.Task | None = None
+
+    async def acquire(self) -> bool:
+        task = self._background
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+        return await super().acquire()
+
+    @contextlib.asynccontextmanager
+    async def background(self):
+        """Hold the lock as background work; LLMBusy if it's taken right now."""
+        if self.locked():
+            raise LLMBusy()
+        await super().acquire()
+        self._background = asyncio.current_task()
+        try:
+            yield
+        finally:
+            self._background = None
+            self.release()
 
 
 @dataclass
@@ -75,9 +113,10 @@ class Ollama:
         self.session = session
 
     async def chat(
-        self, messages: list[dict], num_predict: int = REPLY_TOKENS, temperature: float = 0.9
+        self, messages: list[dict], num_predict: int = REPLY_TOKENS, temperature: float = 0.9,
+        timeout: float = TIMEOUT_SECONDS,
     ) -> Reply:
-        return await self._post(build_payload(self.model, messages, num_predict, temperature))
+        return await self._post(build_payload(self.model, messages, num_predict, temperature), timeout)
 
     async def describe(self, prompt: str, image_b64: str, num_predict: int) -> Reply:
         """What a (base64 JPEG) image shows, from a vision model."""
