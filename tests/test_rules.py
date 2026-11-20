@@ -165,3 +165,14 @@ def test_a_ping_reply_is_filtered_for_slurs_and_leaks_only():
     # canned lines skip the check; held lines are canned, so no loop
     assert set(persona.HELD_LINES) <= persona.CANNED_LINES
     assert set(persona.LEAK_LINES) <= persona.CANNED_LINES
+
+
+def test_a_ping_that_stands_alone_drops_the_earlier_messages():
+    import inspect
+
+    src = inspect.getsource(bot.Nikobot.chat)
+    assert "self.focus(lines, is_reply=message.reference is not None)" in src
+    assert src.index("self.focus(") < src.index("persona.build_chat_messages(")
+    focus = inspect.getsource(bot.Nikobot.focus)
+    assert "persona.stands_alone(answer)" in focus and "return [trigger]" in focus
+    assert "keeping the context" in focus  # errors keep the old behaviour

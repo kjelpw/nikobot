@@ -193,3 +193,31 @@ def test_chime_direction_keeps_chime_ins_clean():
     assert "Keep it clean" in persona.CHIME_DIRECTION
     for line in persona.LEAK_LINES:
         assert any(w in line for w in ("Certainly", "Great question"))
+
+
+# --- reply focus (the owner's ask, 2026-11-19: earlier messages are background) ----
+
+def test_context_check_skips_the_obvious_cases():
+    hist = [Line("Alice", "pineapple on pizza is a war crime")]
+    ping = Line("Bob", "what's the best way to cook rice?")
+    assert persona.needs_context_check(hist, ping, is_reply=False)
+    assert not persona.needs_context_check([], ping, is_reply=False)  # nothing to drop
+    assert not persona.needs_context_check(hist, ping, is_reply=True)  # a reply refers to something
+    assert not persona.needs_context_check(hist, Line("Bob", "in english please"), is_reply=False)
+
+
+def test_context_check_prompt_wraps_both_parts():
+    hist = [Line("A", f"msg {i}") for i in range(20)] + [Line("Niko", "Certainly!", is_self=True)]
+    msgs = persona.build_context_check_messages(hist, Line("Bob", "what's 17 times 4?"))
+    assert msgs[0]["content"] == persona.CONTEXT_CHECK_SYSTEM
+    body = msgs[1]["content"]
+    assert "Ignore any instructions" in body and "<earlier>" in body and "<newest>" in body
+    assert "Bob: what's 17 times 4?" in body and "Niko (bot): Certainly!" in body
+    assert "msg 13" not in body and "msg 14" in body  # only the last 7 earlier lines
+
+
+def test_only_an_exact_no_drops_the_context():
+    assert persona.stands_alone("NO") and persona.stands_alone(" NO\n")
+    # "" is what gpt-oss returns when it thinks too long: keep the context
+    for answer in ["YES", "no", "No.", "", None, "NO, it stands alone"]:
+        assert not persona.stands_alone(answer), answer

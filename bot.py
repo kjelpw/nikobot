@@ -574,6 +574,27 @@ class Nikobot(commands.Bot):
                 return False
         return safety.reply_check_clears(answer)
 
+    async def focus(self, lines: list[persona.Line], is_reply: bool) -> list[persona.Line]:
+        """Just the ping, when it stands on its own (the owner's ask, 2026-11-19).
+
+        Earlier messages are background, not the topic: one short model call
+        asks whether the ping needs them. Only an exact NO drops them; an error,
+        timeout or anything else keeps them, which is how it worked before.
+        """
+        *history, trigger = lines
+        if not persona.needs_context_check(history, trigger, is_reply):
+            return lines
+        async with self.llm_lock:
+            try:
+                answer = await self.llm.classify(persona.build_context_check_messages(history, trigger))
+            except (LLMTimeout, LLMError, aiohttp.ClientError, ValueError) as exc:
+                log.warning("context check failed (%s); keeping the context", type(exc).__name__)
+                return lines
+        if persona.stands_alone(answer):
+            log.info("chat: the ping stands on its own; answering it without earlier messages")
+            return [trigger]
+        return lines
+
     async def send(self, channel, text: str, reply_to: discord.Message) -> None:
         try:
             await channel.send(text, reference=reply_to.to_reference(fail_if_not_exists=False))
@@ -611,6 +632,7 @@ class Nikobot(commands.Bot):
                 captions = await self.captions(history + [current], started + images.BUDGET_S)
                 trigger = self.to_line(current, captions) or trigger
                 lines = context_without_serious(self.to_lines(history, captions)) + [trigger]
+                lines = await self.focus(lines, is_reply=message.reference is not None)
                 prompt = persona.build_chat_messages(
                     lines, serious_hint=safety.is_serious([trigger.text])
                 )
