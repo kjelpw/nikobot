@@ -212,3 +212,25 @@ def test_anything_pointing_back_keeps_the_context():
                  "you got his name wrong", "who said that first", "what did I just ask?"]:
         assert persona.needs_context(text, is_reply=False), text
     assert persona.needs_context("what's 17 times 4?", is_reply=True)  # a reply refers to something
+
+
+def test_replies_never_carry_links():
+    # 2026-11-19: a "picture" reply linked a made-up i.imgur.com/ElGappy.jpg
+    raw = ("Certainly! Here's ElGappy 🔗 [ElGappy's photo](https://i.imgur.com/ElGappy.jpg) "
+           "and more at https://example.com/x?y=1 or <https://a.b/c> or www.fake.site ✨")
+    out = persona.tidy_reply(raw)
+    for bit in ("http", "imgur", "www.", "](", "<"):
+        assert bit not in out, bit
+    assert "ElGappy's photo" in out and out.endswith("✨")
+
+
+def test_system_prompt_asks_for_english_and_no_links():
+    assert "English unless asked otherwise" in persona.SYSTEM_PROMPT
+    assert "Never write links" in persona.SYSTEM_PROMPT
+
+
+def test_mostly_foreign_spots_other_scripts():
+    assert persona.mostly_foreign("بالتأكيد! إيلغابي (ElGappy) هو كلب رائع 🌟🐶")
+    assert persona.mostly_foreign("Конечно! Это кот.")
+    for text in ["Certainly! ElGappy is a top-tier pup 🌟", "café crème brûlée", "🚀✨ 68!", "", None]:
+        assert not persona.mostly_foreign(text), text

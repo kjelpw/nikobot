@@ -184,3 +184,12 @@ def test_a_ping_that_stands_alone_drops_the_earlier_messages():
     follow = persona.Line("B", "do that again in pirate speak")
     assert bot.focus(hist + [follow], is_reply=False) == hist + [follow]
     assert bot.focus([ping], is_reply=False) == [ping]
+
+
+def test_the_bots_own_foreign_slips_leave_the_context():
+    import persona
+
+    lines = [persona.Line("Niko", "بالتأكيد! إيلغابي هو كلب رائع", is_self=True),
+             persona.Line("Ana", "مرحبا يا جماعة"),  # a person's own message stays
+             persona.Line("Niko", "Certainly! Pure synergy.", is_self=True)]
+    assert [l.text for l in bot.context_without_serious(lines)] == ["مرحبا يا جماعة", "Certainly! Pure synergy."]

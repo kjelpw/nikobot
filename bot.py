@@ -187,8 +187,18 @@ def image_config(secrets, url: str) -> tuple[ImageConfig | None, str]:
 
 
 def context_without_serious(lines: list[persona.Line]) -> list[persona.Line]:
-    """Earlier messages for the joke's context, minus any on serious topics."""
-    return [line for line in lines if not safety.is_serious([line.text])]
+    """Earlier messages for the joke's context, minus any on serious topics.
+
+    Also minus the bot's own replies in another script: it once slipped into
+    Arabic, and those replies in the context kept it there (2026-11-19, 2 of 5
+    replies still Arabic with "Write in English" in the prompt; 0 of 5 without
+    them). People's own messages always stay.
+    """
+    return [
+        line
+        for line in lines
+        if not safety.is_serious([line.text]) and not (line.is_self and persona.mostly_foreign(line.text))
+    ]
 
 
 class Cooldown:
