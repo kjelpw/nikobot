@@ -199,7 +199,7 @@ Environment variables:
 | `NIKOBOT_MODEL` | `local-chat:latest` | Ollama model to use. Names containing `chat` or `gpt-oss` are sent `"think": "low"`. |
 | `NIKOBOT_CAPTION_MODEL` | `local-small:latest` | Vision model for image captions (sent `"think": false`). `off` turns captions off. |
 | `OLLAMA_URL` | `http://ollama:11434` | Base URL of the Ollama server. |
-| `NIKOBOT_DATA_DIR` | `/data` | Where `messages.log`, `stream_state.json`, `chime_state.json` and `lore.json*` live. |
+| `NIKOBOT_DATA_DIR` | `/data` | Where `messages.log`, `stream_state.json`, `chime_state.json` and `lore-*.json*` live. |
 | `NIKOBOT_SECRETS` | `/app/secrets.py` | Path to `secrets.py`. |
 | `IMAGEGEN_URL` | `http://imagegen:8080` | Base URL of the image service. Empty turns image replies off. |
 
@@ -323,23 +323,29 @@ call back to yesterday's joke like a regular would.
 - **Cost.** One call a day: about 3.6k prompt tokens (27 s on the CPU) and up
   to ~1.2k output tokens with the reasoning, so 1-2.5 minutes. The lore adds
   up to about 200 prompt tokens to each reply (about 60 for 4 bullets).
-- **Commands.** `!lore` shows the current bullets in the channel. `!forget`
-  clears them, for members with Manage Server only; the next update then reads
-  only chat after the `!forget`. Both work only in the owner's servers, never
-  in DMs, and never ping anyone.
-- **Stored** in `/data/lore.json`
+- **One lore per server, never shared.** Each server's lore is learned only
+  from that server's own public channels (two fences: the record's server and
+  its channel) and used only in that server, in replies, chime-ins and
+  `!lore`. Nothing from one server can show up in another (the owner,
+  2026-11-20: bleeding between servers "would be VERY bad"). The first version
+  had one lore for both servers; it was switched off and deleted the same night.
+- **Commands.** `!lore` shows this server's bullets in the channel. `!forget`
+  clears this server's, for members with Manage Server only; the next update
+  then reads only chat after the `!forget`. Both work only in the owner's
+  servers, never in DMs, and never ping anyone.
+- **Stored** in `/data/lore-<server id>.json`, one file per server
   (`{"updated": ..., "bullets": [...]}`), written atomically, with the 7
-  previous versions as `lore.json.1` (newest) to `lore.json.7`. `!forget`
-  keeps the cleared lore as `lore.json.1` too. A corrupt or unreadable file
+  previous versions as `.1` (newest) to `.7`. `!forget` keeps the cleared
+  lore as `.1` too. A corrupt or unreadable file
   means no lore and a warning in the log. The bullets are checked again on
   load, and a changed file is picked up without a restart.
-- **Reset or roll back.** `!forget`, or delete `/data/lore.json*` to erase it
+- **Reset or roll back.** `!forget`, or delete `/data/lore-*.json*` to erase it
   for good. To roll back a day, copy a version over the current one:
-  `docker run --rm --user 1000 -v medias_nikobot_data:/data alpine cp /data/lore.json.1 /data/lore.json`.
+  `docker run --rm --user 1000 -v medias_nikobot_data:/data alpine cp /data/lore-<id>.json.1 /data/lore-<id>.json`.
   Either takes effect on the next reply, without a restart.
 - **Logs** carry counts and timings only (`lore: updated: 7 bullets (3 carried
   over, 4 new), 68 words`), never lore text or chat content. The startup log
-  says `lore on (N bullets, updated <date>)` or `lore off (...)`.
+  says `lore on in guild <id> (N bullets, updated <date>)` per server, or `lore off (...)`.
 - **Turning it off:** remove `evolve` from `secrets.py` (or set it to `False`)
   and restart. The file stays in `/data` until deleted.
 

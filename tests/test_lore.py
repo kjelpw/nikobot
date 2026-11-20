@@ -611,10 +611,12 @@ def test_evolve_is_off_unless_switched_on():
 
 
 class Ctx:
-    def __init__(self, guild_id=HOME, manage=False, store=None, allowed=ALLOWED):
+    def __init__(self, guild_id=HOME, manage=False, store=None, allowed=ALLOWED, stores=None):
         self.guild = None if guild_id is None else SimpleNamespace(id=guild_id)
         self.author = SimpleNamespace(guild_permissions=SimpleNamespace(manage_guild=manage))
-        self.bot = SimpleNamespace(allowed_guilds=allowed, lore_store=store)
+        # each server has its own store; by default only HOME has one
+        stores = stores if stores is not None else ({HOME: store} if store is not None else {})
+        self.bot = SimpleNamespace(allowed_guilds=allowed, lore_stores=stores)
         self.sent = []
 
     async def send(self, text, **kwargs):
@@ -667,15 +669,62 @@ def test_commands_exist_only_when_lore_is_on():
 
 def test_lore_reaches_ping_replies_and_chime_ins_but_not_serious_pings(tmp_path):
     chat = inspect.getsource(bot.Nikobot.chat)
-    assert "lore=self.lore_for(trigger.text)" in chat
-    assert "lore=self.lore_for()" in inspect.getsource(bot.Nikobot.maybe_chime)
+    assert "lore=self.lore_for(message.guild.id, trigger.text)" in chat
+    assert "lore=self.lore_for(message.guild.id)" in inspect.getsource(bot.Nikobot.maybe_chime)
     store = lore.LoreStore(tmp_path / "lore.json")
     store.save(GOOD, NOW)
-    fake = SimpleNamespace(lore_store=store)
-    assert bot.Nikobot.lore_for(fake, "what's 17 times 4?") == tuple(GOOD)
-    assert bot.Nikobot.lore_for(fake) == tuple(GOOD)
-    assert bot.Nikobot.lore_for(fake, "my grandpa died last night") == ()
-    assert bot.Nikobot.lore_for(SimpleNamespace(lore_store=None), "hi") == ()
+    fake = SimpleNamespace(lore_stores={HOME: store})
+    assert bot.Nikobot.lore_for(fake, HOME, "what's 17 times 4?") == tuple(GOOD)
+    assert bot.Nikobot.lore_for(fake, HOME) == tuple(GOOD)
+    assert bot.Nikobot.lore_for(fake, HOME, "my grandpa died last night") == ()
+    assert bot.Nikobot.lore_for(SimpleNamespace(lore_stores={}), HOME, "hi") == ()
+
+
+# --- never between servers (the owner, 2026-11-20: that "would be VERY bad") -----------
+
+def test_each_server_has_its_own_lore(tmp_path):
+    home, other = lore.LoreStore(tmp_path / "a.json"), lore.LoreStore(tmp_path / "b.json")
+    home.save(GOOD, NOW)
+    fake = SimpleNamespace(lore_stores={HOME: home, OTHER: other})
+    assert bot.Nikobot.lore_for(fake, HOME) == tuple(GOOD)
+    assert bot.Nikobot.lore_for(fake, OTHER) == ()  # the other server never sees it
+    assert bot.Nikobot.lore_for(fake, None) == ()  # nor does a DM
+    # !lore in the other server shows the other server's (empty) lore
+    ctx = Ctx(OTHER, stores={HOME: home, OTHER: other}, allowed=frozenset({HOME, OTHER}))
+    asyncio.run(bot.lore_command.callback(ctx))
+    assert ctx.sent[0][0] == lore.show(())
+    # !forget in the other server leaves this one's lore alone
+    ctx = Ctx(OTHER, manage=True, stores={HOME: home, OTHER: other}, allowed=frozenset({HOME, OTHER}))
+    asyncio.run(bot.forget_command.callback(ctx))
+    assert home.current() == tuple(GOOD)
+
+
+def test_one_store_file_per_server():
+    init = inspect.getsource(bot.Nikobot.__init__)
+    assert 'lore.LoreStore(DATA_DIR / f"lore-{guild_id}.json")' in init
+    assert "self.lore_stores[guild_id] = store" in init
+
+
+def test_an_update_reads_only_its_own_server():
+    src = inspect.getsource(bot.Nikobot.lore_update)
+    assert "frozenset({guild_id})" in src and "self.lore_channels(guild_id)" in src
+    assert "self.allowed_guilds" not in src  # never both servers at once
+    channels = inspect.getsource(bot.Nikobot.lore_channels)
+    assert "guild.id != guild_id" in channels
+    watch = inspect.getsource(bot.Nikobot.lore_watch.coro)
+    assert "self.lore_update(gid)" in watch and "for guild_id, schedule in self.lore_schedules.items()" in watch
+
+
+def test_records_from_another_server_never_reach_the_model():
+    recs = [
+        {"guild_id": HOME, "channel_id": 1, "author": "a", "author_id": 5, "content": "home joke about pickles"},
+        {"guild_id": OTHER, "channel_id": 2, "author": "b", "author_id": 6, "content": "other server secret plans"},
+    ]
+    chat = lore.select_chat(recs, frozenset({HOME}), bot_id=99, channels=frozenset({1, 2}))
+    text = " ".join(str(e) for e in chat.entries)
+    assert "pickles" in text and "secret" not in text and chat.left_out.get("other server") == 1
+    # and a channel list that doesn't match keeps everything out
+    assert lore.select_chat(recs, frozenset({HOME}), bot_id=99, channels=frozenset()).entries == []
 
 
 def test_lore_idle_means_unlocked_nobody_waiting_and_loaded():
@@ -704,7 +753,7 @@ def test_lore_idle_means_unlocked_nobody_waiting_and_loaded():
 def test_the_update_runs_in_the_background_and_off_the_event_loop():
     src = inspect.getsource(bot.Nikobot.lore_update)
     assert "self.llm_lock.background()" in src and "asyncio.to_thread(" in src
-    assert "self.lore_channels()" in src and "self.lore_store.read_since()" in src
+    assert "self.lore_channels(guild_id)" in src and "store.read_since()" in src
     assert "lore.update(" in src and "timeout=lore.UPDATE_TIMEOUT_S" in src
     watch = inspect.getsource(bot.Nikobot.lore_watch.coro)
     assert "lore.tick(" in watch and "except Exception" in watch
