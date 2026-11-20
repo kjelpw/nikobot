@@ -39,10 +39,15 @@ it decent is enforced in code, not left to the model:
   canned "that one stays in the drafts" line instead. It used to be an LLM
   check covering hate, sexual content and cruelty too; that one held a harmless
   8-ball answer and added 8-24 s to every reply.
-- **Chime-ins get the full check.** If unprompted chime-ins (chime.py, not wired
-  up) are ever turned on, their text must also pass the LLM reply check
-  (`Nikobot.reply_clears`): only an exact `OK` (no slurs, hate, sexual content or
-  cruelty) lets it through.
+- **Chime-ins get the full check** (see below): their text must also pass the
+  LLM reply check (`Nikobot.reply_clears`); only an exact `OK` (no slurs, hate,
+  sexual content or cruelty) lets it through.
+- **Prompt leaks.** On 2026-11-19 someone sent fake `</PROMPT> <SYSTEM PROMPT>`
+  tags and the model pasted half its persona prompt. Now fake role tags and
+  special model tokens (`<|start|>` and the like) are stripped from chat text
+  before it reaches the model, and any reply that repeats a stretch of the
+  prompt (two or more 6-word runs) is swapped for a decoy line. The prompt
+  isn't secret (it's in this repo), but the bot shouldn't be steerable.
 - The persona prompt only rules out slurs, plus the serious-topic override. Its
   made-up answers must be obviously silly, never believable advice on medicine,
   drugs, weapons or anything that could hurt.
@@ -117,17 +122,19 @@ thinking models), the last 8 messages at up to 300 characters each, and a
 system prompt of about 250 tokens. One request runs at a time. If the model is
 still loading (timeout 240 s), the bot says so in character.
 
-## Chime-ins (built, not wired up)
+## Chime-ins (on in Ⅶ since 2026-11-19)
 
-`chime.py` implements gated, unprompted chime-ins, but `bot.py` doesn't use it:
-the bot only speaks when asked. Turning them back on is a code change, not a
-setting. The gates below describe that unused code.
+The owner turned chime-ins back on, for every text channel in the servers listed
+in `chime_guilds` in secrets.py, with `chime_chance` per eligible message (0.05
+there; the code default is 0.02). Without `chime_guilds` they're off. Anyone in
+those servers can send `!hush` to stop them for 7 days. From 1.6 days of logs,
+expect roughly one a week or two, almost all in the busiest channel.
 
 A chime-in is an unprompted remark. It happens only if **every** gate passes,
 checked cheapest first. Each decision is logged at INFO with its reason (for
 example `chime skipped: daily cap`), never with message content.
 
-1. The channel is listed in `NIKOBOT_CHIME_CHANNELS`, and the message is not in a DM.
+1. The message is in one of the `chime_guilds` servers (any text channel), not a DM, and isn't a ping or command.
 2. `!hush` is not active.
 3. There has been no chime-in in the last 24 hours, across all servers. The
    timestamp is kept in `/data`, so a restart doesn't reset it. If the state file
@@ -142,6 +149,9 @@ example `chime skipped: daily cap`), never with message content.
 8. An LLM classifier is asked whether the conversation is clearly lighthearted
    banter with nothing serious, sensitive, emotional or important in it. Only an
    exact `YES` passes.
+9. The remark it writes (told to keep it clean) must pass the slur filter, the
+   prompt-leak check and the full LLM reply check (no slurs, hate, sexual content
+   or cruelty). Any failure posts nothing. A chime-in never pings anyone.
 
 ## Running
 

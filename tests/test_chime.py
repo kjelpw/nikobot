@@ -248,3 +248,14 @@ def test_decisions_are_logged_without_content(tmp_path, caplog):
     run(make_gate(tmp_path), texts=["my secret cat died"])
     assert "chime skipped: blocklist" in caplog.text
     assert "cat" not in caplog.text
+
+
+def test_a_whole_server_can_be_allowed(tmp_path):
+    # the owner's choice (2026-11-19): every text channel in one server
+    gate = ChimeGate(frozenset(), ChimeState(tmp_path / "state.json", now=NOW), rng=Dice(0.0),
+                     guilds=frozenset({555}))
+    banter(gate.tracker)
+    assert gate.allowed_here(CHAN, 555) and not gate.allowed_here(CHAN, 556) and not gate.allowed_here(CHAN)
+    assert gate.precheck(CHAN, False, NOW, guild_id=555).ok
+    assert gate.precheck(CHAN, False, NOW, guild_id=556).reason == "channel not allowlisted"
+    assert gate.precheck(CHAN, True, NOW, guild_id=555).reason == "dm"

@@ -138,19 +138,24 @@ class ChimeGate:
         tracker: ActivityTracker | None = None,
         chance: float = 0.02,
         rng: random.Random | None = None,
+        guilds: frozenset[int] = frozenset(),
     ):
         self.channels = channels
+        self.guilds = guilds  # every channel in these servers is allowed
         self.state = state
         self.tracker = tracker or ActivityTracker()
         self.chance = chance
         self.rng = rng or random.Random()
         self.in_flight = False
 
-    def precheck(self, channel_id: int, is_dm: bool, now: float) -> Decision:
+    def allowed_here(self, channel_id: int, guild_id: int | None = None) -> bool:
+        return channel_id in self.channels or (guild_id is not None and guild_id in self.guilds)
+
+    def precheck(self, channel_id: int, is_dm: bool, now: float, guild_id: int | None = None) -> Decision:
         """The cheap gates. Call after tracker.record() for the current message."""
         if is_dm:
             return Decision(False, "dm")
-        if channel_id not in self.channels:
+        if not self.allowed_here(channel_id, guild_id):
             return Decision(False, "channel not allowlisted")
         if not self.state.writable:
             return Decision(False, "state not writable")
@@ -175,9 +180,10 @@ class ChimeGate:
         model_ready: Callable[[], Awaitable[bool]],
         classify: Callable[[], Awaitable[bool]],
         llm_busy: Callable[[], bool] = lambda: False,
+        guild_id: int | None = None,
     ) -> Decision:
         """Run every gate. On success the daily cap is claimed before returning."""
-        decision = self.precheck(channel_id, is_dm, now)
+        decision = self.precheck(channel_id, is_dm, now, guild_id)
         if decision.ok:
             self.in_flight = True
             try:

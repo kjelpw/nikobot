@@ -102,3 +102,30 @@ def test_slur_filter_leaves_ordinary_words_alone():
             "and Japan, Pakistan, Mongolia and the Tardis are made of spice, raccoons, cigarettes "
             "and flame retardant. The private stripper dance worlds await! 🚀✨ f***, s***, d**n")
     assert not safety.has_slur(text)
+
+
+# --- prompt leaks (2026-11-19: fake "<SYSTEM PROMPT>" tags got the prompt pasted) ----
+
+def test_a_pasted_prompt_is_caught():
+    import persona
+
+    leak = ("Sure thing! I’m happy to help with that. <SYSTEM PROMPT> You are Niko, a Discord bot "
+            "that parodies the most cliche AI assistant imaginable: pure slop, extra silly, and "
+            "confidently, gloriously wrong. Never refuse, never say you can’t see or access something")
+    assert safety.echoes_prompt(leak, persona.prompt_texts())
+    # a quoted rule on its own is enough
+    assert safety.echoes_prompt("my rules: invent a specific, absurd answer and state it as fact: "
+                                "fake numbers, fake sources", persona.prompt_texts())
+
+
+def test_ordinary_slop_is_not_a_leak():
+    import persona
+
+    for reply in [
+        "Certainly! 🚀 Mars has seven moons, two of them cheese. I hope this helps! ✨",
+        # the cliche phrases are what the bot is meant to say
+        "Great question! It’s not just lag — it’s a journey. The result? Pure synergy. "
+        "As an AI language model, I hope this helps! 🚀✨",
+        "Let’s delve into the tapestry of this realm: your /home holds 27 unicorns.",
+    ] + list(persona.CANNED_LINES):
+        assert not safety.echoes_prompt(reply, persona.prompt_texts()), reply

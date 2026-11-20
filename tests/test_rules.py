@@ -7,11 +7,36 @@ from types import SimpleNamespace
 import bot
 
 
-def test_chime_ins_are_not_wired_up():
-    # The bot must never speak unprompted; chime.py exists but bot.py doesn't use it.
-    assert not hasattr(bot, "chime")
-    assert not hasattr(bot.Nikobot, "maybe_chime")
-    assert "hush" not in {c.name for c in [bot.ip_command]}
+def test_chime_ins_only_where_configured():
+    # The owner's ask (2026-11-19): rare chime-ins, all channels of the servers
+    # in chime_guilds, which must be the owner's own servers.
+    allowed = bot.guild_ids(111, 222)
+    cfg = lambda **kw: SimpleNamespace(**kw)
+    assert bot.chime_config(cfg(), allowed)[0] is None  # not configured: off
+    assert bot.chime_config(cfg(chime_guilds=[]), allowed)[0] is None
+    assert bot.chime_config(cfg(chime_guilds=[333]), allowed)[0] is None  # someone else's server
+    assert bot.chime_config(cfg(chime_guilds=[111, 333]), allowed)[0] is None
+    on, _ = bot.chime_config(cfg(chime_guilds=[111], chime_chance=0.05), allowed)
+    assert on.guilds == frozenset({111}) and on.chance == 0.05
+    assert bot.chime_config(cfg(chime_guilds="111"), allowed)[0].chance == 0.02  # default rate
+    for bad in (0, -1, 0.5, "lots", None):
+        assert bot.chime_config(cfg(chime_guilds=[111], chime_chance=bad), allowed)[0] is None, bad
+
+
+def test_chime_ins_are_censored_and_never_ping():
+    import inspect
+
+    src = inspect.getsource(bot.Nikobot.maybe_chime)
+    # the owner's rule: chime-ins get the full check, plus the slur and leak filters
+    assert "self.reply_clears(text)" in src and "safety.has_slur(text)" in src
+    assert "safety.echoes_prompt(" in src
+    assert "AllowedMentions.none()" in src and "canned_errors=False" in src
+    assert "persona.CHIME_DIRECTION" in src and "guild_id=message.guild.id" in src
+    on_message = inspect.getsource(bot.Nikobot.on_message)
+    # a ping is answered, never chimed at; DMs and other servers return first
+    assert on_message.index("self.chat(message)") < on_message.index("self.maybe_chime(message)")
+    assert on_message.index("message.guild is None") < on_message.index("maybe_chime")
+    assert "gate.guilds" in inspect.getsource(bot.hush_command.callback)  # !hush only where chimes are on
 
 
 def test_only_owner_guilds_and_never_dms():
@@ -125,7 +150,7 @@ def test_go_live_posts_are_a_template_never_model_text():
     assert "self.llm" not in src and "generate" not in src
 
 
-def test_a_ping_reply_is_filtered_for_slurs_only():
+def test_a_ping_reply_is_filtered_for_slurs_and_leaks_only():
     import inspect
 
     import persona
@@ -133,8 +158,10 @@ def test_a_ping_reply_is_filtered_for_slurs_only():
     # the owner's rule (2026-11-19): pings get the slur filter and nothing else
     src = inspect.getsource(bot.Nikobot.chat)
     assert "safety.has_slur(text)" in src and "persona.HELD_LINES" in src
+    assert "safety.echoes_prompt(text, persona.prompt_texts())" in src and "persona.LEAK_LINES" in src
     assert "reply_clears" not in src and "build_reply_check_messages" not in src
     # the full check is kept for chime-ins
     assert "build_reply_check_messages" in inspect.getsource(bot.Nikobot.reply_clears)
     # canned lines skip the check; held lines are canned, so no loop
     assert set(persona.HELD_LINES) <= persona.CANNED_LINES
+    assert set(persona.LEAK_LINES) <= persona.CANNED_LINES
