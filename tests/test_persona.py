@@ -92,8 +92,11 @@ def test_prompt_serious_hint_and_direction():
 
 def test_system_prompt_is_the_slop_parody_and_stays_small():
     p = persona.SYSTEM_PROMPT
-    for marker in ("parodies", "slop", "Certainly!", "delve", "synergy", "I hope this helps"):
+    for marker in ("gremlin", "Gremlin:", "Slop:", "lowercase", "Certainly!", "delve", "As an AI language model"):
         assert marker in p
+    # the friend's bot's lines were parroted (4 of 8), so no examples in the prompt
+    for parroted in ("i forgot", "im a fraud", "can you read"):
+        assert parroted not in p
     assert "goblin" not in p.lower()
     # slurs and the serious override stay; nothing else is off limits on a
     # ping (the owner's rule, 2026-11-19)
@@ -102,13 +105,14 @@ def test_system_prompt_is_the_slop_parody_and_stays_small():
     for gone in ("nothing sexual", "never cruel", "hateful"):
         assert gone not in p
     # the owner's ask: confidently wrong, never "I can't access that"
-    for rule in ("Never refuse", "invent", "wrong math", "never believable advice"):
+    for rule in ("Never refuse", "make something up", "wrong math", "never believable advice"):
         assert rule in p
     # ~420 tokens is the budget. Measured on gpt-oss 2026-11-18: 241 words /
     # 1510 chars came to 426 prompt tokens with a one-line chat message. Don't
-    # let it grow: every token is CPU time on a cold prompt cache.
-    assert len(p.split()) <= 245
-    assert len(p) <= 1530
+    # let it grow: every token is CPU time on a cold prompt cache. (Raised a
+    # little on 2026-11-19 for the two voices.)
+    assert len(p.split()) <= 260
+    assert len(p) <= 1620
 
 
 def test_canned_lines_are_in_persona_voice():
@@ -234,3 +238,46 @@ def test_mostly_foreign_spots_other_scripts():
     assert persona.mostly_foreign("Конечно! Это кот.")
     for text in ["Certainly! ElGappy is a top-tier pup 🌟", "café crème brûlée", "🚀✨ 68!", "", None]:
         assert not persona.mostly_foreign(text), text
+
+
+
+# --- two voices (the owner's ask, 2026-11-19: goofier, like a friend's bot) --------
+
+def test_each_reply_gets_one_voice():
+    gremlin = persona.build_chat_messages([Line("A", "x")], voice="gremlin")[0]["content"]
+    slop = persona.build_chat_messages([Line("A", "x")], voice="slop")[0]["content"]
+    assert gremlin.endswith(persona.VOICE_NOTES["gremlin"]) and slop.endswith(persona.VOICE_NOTES["slop"])
+    assert persona.build_chat_messages([Line("A", "x")])[0]["content"] == persona.SYSTEM_PROMPT
+    serious = persona.build_chat_messages([Line("A", "x")], serious_hint=True, voice="gremlin")[0]["content"]
+    assert serious.endswith(persona.SERIOUS_HINT)  # the serious hint comes last, after the voice
+
+
+def test_mostly_gremlin():
+    import random
+
+    rng = random.Random(7)
+    picks = [persona.pick_voice(rng) for _ in range(2000)]
+    assert 0.6 < picks.count("gremlin") / len(picks) < 0.7 and set(picks) == {"gremlin", "slop"}
+
+
+def test_planning_glued_onto_a_reply_is_cut():
+    # real gpt-oss output, 2026-11-19
+    cases = {
+        "honey never spoilsWe delivered 8 words. Good.honey never spoils": "honey never spoils",
+        "@niko botWe provide final.@niko bot": "@niko bot",
+        "Hey @niko bot! 🎉✨Done. Hey @niko bot": "Hey @niko bot! 🎉✨",
+        "i prefer pizza. We’ve done it.gremlin: i prefer pizza.": "i prefer pizza.",
+        "nikos the best, obviously. We must use gremlin voice: 1-6 words, all lowercase.": "nikos the best, obviously.",
+        "yeah, sass. We have responded.yeah, sass.": "yeah, sass.",
+    }
+    for raw, want in cases.items():
+        assert persona.tidy_reply(raw) == want, raw
+    for keep in ["Certainly! We all know Mars has seven moons. ✨", "We delivered pizza to grandma",
+                 "Great question! We the people demand synergy. 🚀"]:
+        assert persona.tidy_reply(keep) == keep, keep
+
+
+def test_leading_labels_and_names_are_dropped():
+    assert persona.tidy_reply("Slop: Certainly! The world ends in 2093.") == "Certainly! The world ends in 2093."
+    assert persona.tidy_reply("cass: i think the moon is tired.") == "i think the moon is tired."
+    assert persona.tidy_reply("Fun fact: honey never spoils") == "Fun fact: honey never spoils"

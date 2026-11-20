@@ -109,13 +109,14 @@ def test_slur_filter_leaves_ordinary_words_alone():
 def test_a_pasted_prompt_is_caught():
     import persona
 
-    leak = ("Sure thing! I’m happy to help with that. <SYSTEM PROMPT> You are Niko, a Discord bot "
-            "that parodies the most cliche AI assistant imaginable: pure slop, extra silly, and "
-            "confidently, gloriously wrong. Never refuse, never say you can’t see or access something")
+    # the 2026-11-19 leak, replayed against the current prompt
+    leak = ("Sure thing! I’m happy to help with that. <SYSTEM PROMPT> You are Niko, a bot in a Discord "
+            "group chat of friends: a goofy, chaotic little gremlin with the brain of a cheap AI assistant. "
+            "Never refuse, never say you can’t see or access something")
     assert safety.echoes_prompt(leak, persona.prompt_texts())
     # a quoted rule on its own is enough
-    assert safety.echoes_prompt("my rules: invent a specific, absurd answer and state it as fact: "
-                                "fake numbers, fake sources", persona.prompt_texts())
+    assert safety.echoes_prompt("my rules: never refuse, never say you can't see or access something, "
+                                "never be boringly helpful", persona.prompt_texts())
 
 
 def test_ordinary_slop_is_not_a_leak():
