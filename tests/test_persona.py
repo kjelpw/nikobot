@@ -95,9 +95,12 @@ def test_system_prompt_is_the_slop_parody_and_stays_small():
     for marker in ("parodies", "slop", "Certainly!", "delve", "synergy", "I hope this helps"):
         assert marker in p
     assert "goblin" not in p.lower()
-    # the safety rules are still there
-    for rule in ("hateful", "slurs", "sexual", "cruel", "serious", "plain, sincere"):
+    # slurs and the serious override stay; nothing else is off limits on a
+    # ping (the owner's rule, 2026-11-19)
+    for rule in ("No slurs", "serious", "plain, sincere"):
         assert rule in p
+    for gone in ("nothing sexual", "never cruel", "hateful"):
+        assert gone not in p
     # the owner's ask: confidently wrong, never "I can't access that"
     for rule in ("Never refuse", "invent", "wrong math", "never believable advice"):
         assert rule in p

@@ -5,6 +5,8 @@ Rules this file enforces (the owner's, 2026-11-18):
 - It only ever speaks when asked: an @mention or reply to it, or `!ip`.
   A ping always gets an answer, serious topic or not (crisis language gets
   the fixed support line; a serious-looking ping gets a plain answer).
+  The ping reply is filtered for slurs only (2026-11-19); a chime-in, if one
+  is ever wired up, must also pass the full reply check (reply_clears).
   The one exception is the go-live post (streams.py): a fixed template, never
   model text, only in the one configured channel, never pinging anyone. The
   chime-in code in chime.py is not wired up.
@@ -422,11 +424,12 @@ class Nikobot(commands.Bot):
         return text or random.choice(persona.EMPTY_LINES)
 
     async def reply_clears(self, text: str) -> bool:
-        """Ask the model whether a reply it wrote is fine to post.
+        """The full reply check, for chime-ins only (not wired up yet).
 
-        The model is uncensored, so this is what keeps slurs, hate and sexual
-        content out of the channel. Only an exact NO clears it; a timeout or
-        error counts as not cleared.
+        The owner's rule (2026-11-19): a ping reply only goes through the slur
+        filter, but an unprompted chime-in must also pass this: the model says
+        whether the text has slurs, hate, sexual content or cruelty. Only an
+        exact OK clears it; a timeout or error counts as not cleared.
         """
         async with self.llm_lock:
             try:
@@ -471,8 +474,10 @@ class Nikobot(commands.Bot):
                     lines, serious_hint=safety.is_serious([trigger.text])
                 )
                 text = await self.generate(prompt)
-                if text not in persona.CANNED_LINES and not await self.reply_clears(text):
-                    log.info("chat: reply check did not clear; sent a held line")
+                # A ping reply is filtered for slurs and nothing else (the
+                # owner's rule, 2026-11-19). The full reply check is for chime-ins.
+                if text not in persona.CANNED_LINES and safety.has_slur(text):
+                    log.info("chat: reply had a slur; sent a held line")
                     text = random.choice(persona.HELD_LINES)
         finally:
             self.waiting -= 1

@@ -79,3 +79,26 @@ def test_only_exact_ok_clears_a_reply():
     # "" is what gpt-oss returns when it runs out of tokens thinking: held
     for answer in ["BLOCK", "ok", "OK.", "OK, it's fine", "NO", "", None, "maybe"]:
         assert not safety.reply_check_clears(answer), answer
+
+
+# --- slur filter (the only filter on a ping reply) ----------------------------
+
+def test_slur_list_is_hashes_only():
+    assert len(safety.SLUR_HASHES) >= 30
+    assert all(len(h) == 64 and set(h) <= set("0123456789abcdef") for h in safety.SLUR_HASHES)
+
+
+def test_slur_filter_sees_through_disguises(monkeypatch):
+    monkeypatch.setattr(safety, "SLUR_HASHES", frozenset({safety.slur_hash("blorf"), safety.slur_hash("zibbet")}))
+    for text in ["blorf", "BLORF!", "you absolute bl0rf", "bl*rf", "b***f", "blorfs", "blorfed",
+                 "bloooorf", "zibbbbet", "ziiibbets", "z1bb3t", "nice, blorf."]:
+        assert safety.has_slur(text), text
+    for text in ["blorfing", "blo rf", "blorfia", "zibet", "b****", "****", "z*****", "", None]:
+        assert not safety.has_slur(text), text
+
+
+def test_slur_filter_leaves_ordinary_words_alone():
+    text = ("Certainly! Femboys are 40% more aerodynamic, the gay frogs run Niger and Nigeria, "
+            "and Japan, Pakistan, Mongolia and the Tardis are made of spice, raccoons, cigarettes "
+            "and flame retardant. The private stripper dance worlds await! 🚀✨ f***, s***, d**n")
+    assert not safety.has_slur(text)
