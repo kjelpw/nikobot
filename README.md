@@ -241,12 +241,15 @@ images, sometimes, or if asked for it." Pictures come from the homelab's
 - **Sometimes.** Any other ping reply gets one at `image_chance` (5% by
   default), except a serious-looking ping, or when other chats are waiting for
   the model. Chime-ins stay text-only.
-- **How.** The text reply is posted first, as always. Then the chat model
-  writes a one-sentence image prompt (it's told to keep it PG-13 and funny),
-  which goes through the checks in [Safety](#safety). For a request, the bot
-  says "🎨 painting… (~N min)", then posts the picture as a WebP reply to the
-  same message. Neither pings anyone. Drawing doesn't hold the chat model, so
-  other pings are answered meanwhile.
+- **How.** One message per picture (the owner, 2026-11-19: "it replied twice").
+  A request gets no text reply: the bot answers "🎨 painting… (~N min)" at
+  once and later edits that same message into the picture (or into why there
+  isn't one). A random extra is attached to the text reply by editing it. In
+  between, the chat model writes a one-sentence image prompt (told to keep it
+  PG-13 and funny), which goes through the checks in [Safety](#safety). If the
+  writer comes back empty (it can think until it runs out of tokens), a request
+  is drawn from its own words. Nothing pings anyone. Drawing doesn't hold the
+  chat model, so other pings are answered meanwhile.
 - **How long.** 2 to 4 minutes at 512×512 (measured 2026-11-19: 246 s when
   the weights had to come off the RAID, 121 s right after another image, plus
   5-15 s to write and check the prompt). It isn't much faster than 1024×1024

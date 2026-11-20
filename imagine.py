@@ -477,6 +477,45 @@ async def prompt_verdict(prompt: str, check) -> str | None:
     return None
 
 
+def fallback_prompt(request: str) -> str:
+    """When the prompt writer comes back empty (it can think until it runs out of
+    tokens), draw the request itself. 2026-11-19: "draw @someone from what you
+    know about him" got 0 words in 34 s and no picture."""
+    return tidy_prompt(f"A goofy cartoon: {request}")
+
+
+class Reply:
+    """The one bot message an image flow uses (the owner, 2026-11-19: "it replied twice").
+
+    An asked-for picture posts one line ("painting…"), then edits it into the
+    picture, or into the reason there isn't one. A random extra is attached to
+    the text reply by editing it. A failed edit falls back to a new reply.
+    """
+
+    def __init__(self, bot, message, existing=None):
+        self.bot, self.message = bot, message
+        self.msg = existing
+        self.ours = existing is None  # our own line, so its text may be replaced
+
+    async def say(self, text: str) -> bool:
+        if self.msg is not None and self.ours and await self.bot.edit_image(self.msg, text=text):
+            return True
+        sent = await self.bot.send_image(self.message.channel, self.message, text=text)
+        if sent:
+            self.msg, self.ours = sent, True
+        return bool(sent)
+
+    async def picture(self, data: bytes, filename: str) -> bool:
+        caption = random.choice(DONE_LINES) if self.ours else None  # a text reply keeps its words
+        if self.msg is not None and await self.bot.edit_image(
+            self.msg, text=caption, fp=io.BytesIO(data), filename=filename
+        ):
+            return True
+        return bool(await self.bot.send_image(
+            self.message.channel, self.message, text=caption, fp=io.BytesIO(data), filename=filename
+        ))
+
+
 def request_text(message, bot_id: int | None) -> str:
     names = {u.id: u.display_name for u in getattr(message, "mentions", None) or []}
     return persona.clean_text(message.content, bot_id, names)
@@ -485,6 +524,12 @@ def request_text(message, bot_id: int | None) -> str:
 # --- what it says ---------------------------------------------------------------
 
 PAINTING_LINE = "🎨 painting… (~{minutes} min)"
+# the "painting…" message becomes the picture with one of these
+DONE_LINES = (
+    "Certainly! 🎨 Behold: a masterpiece. I hope this helps! ✨",
+    "Great question! 🖼️ It's not just a picture — it's a *journey*. ✨",
+    "As an AI language model, I painted this with my feelings. 🎨🚀",
+)
 BUSY_LINES = (
     "Certainly! 🎨 My easel is booked solid — it's not just busy, it's a *queue*. "
     "Ask me again in a few minutes! ✨",
@@ -522,20 +567,29 @@ class Images:
         self.client = client or ImageClient(url)
         self.estimate_s = float(ESTIMATE_S)
 
-    async def follow_up(self, bot, message, lines: list[persona.Line], reply_text: str) -> str:
+    def asked(self, message, bot_id: int | None) -> bool:
+        """Does this ping ask for a picture? Then it's the whole reply (no text reply)."""
+        return wants_image(request_text(message, bot_id))
+
+    async def follow_up(self, bot, message, lines: list[persona.Line], reply_text: str | None,
+                        reply_msg=None) -> str:
         """Maybe post an image reply to `message`. Returns what happened; never raises.
 
+        `reply_text` is None for an asked-for picture, which is the whole reply;
+        otherwise it's the text reply, and `reply_msg` the message it went out
+        as, which a random extra is attached to.
         `bot` provides user, http_session, waiting, llm_lock, llm.chat()
-        and the coroutines generate() and send_image().
+        and the coroutines generate(), send_image() and edit_image().
         """
         asked = False
+        out = Reply(bot, message, None if reply_text is None else reply_msg)
         try:
-            if reply_text in persona.CANNED_LINES:
+            if reply_text is not None and reply_text in persona.CANNED_LINES:
                 return self._skip("the text reply was a canned line", asked)
             request = request_text(message, bot.user.id)
             asked = wants_image(request)
             if safety.has_slur(request):
-                return await self._decline(bot, message, asked, "slur in the request", REFUSED_LINES)
+                return await self._decline(out, asked, "slur in the request", REFUSED_LINES)
             if not asked and safety.is_serious([request]):
                 return self._skip("serious topic", asked)
             decision = self.gate.begin(message.author.id, asked)
@@ -545,16 +599,16 @@ class Images:
                     return "dice"
                 if decision.reason == "cooldown":
                     lines_ = tuple(ln.format(minutes=minutes(decision.wait_s)) for ln in COOLDOWN_LINES)
-                    return await self._decline(bot, message, asked, "cooldown", lines_)
-                return await self._decline(bot, message, asked, decision.reason, BUSY_LINES)
+                    return await self._decline(out, asked, "cooldown", lines_)
+                return await self._decline(out, asked, decision.reason, BUSY_LINES)
             try:
-                return await self._draw(bot, message, lines, reply_text, asked)
+                return await self._draw(bot, message, lines, reply_text, asked, out, request)
             finally:
                 self.gate.end()
         except Exception as exc:  # noqa: BLE001 - an image must never break a reply
             log.warning("image: unexpected %s", type(exc).__name__)
             try:
-                await self._decline(bot, message, asked, "unexpected error", BROKEN_LINES)
+                await self._decline(out, asked, "unexpected error", BROKEN_LINES)
             except Exception:  # noqa: BLE001
                 pass
             return "unexpected error"
@@ -563,11 +617,11 @@ class Images:
         log.info("image skipped (%s): %s", "asked" if asked else "random", reason)
         return reason
 
-    async def _decline(self, bot, message, asked: bool, reason: str, canned) -> str:
+    async def _decline(self, out: "Reply", asked: bool, reason: str, canned) -> str:
         """Log why; an explicit ask also gets a canned line, a random extra nothing."""
         self._skip(reason, asked)
         if asked:
-            await bot.send_image(message.channel, message, text=random.choice(canned))
+            await out.say(random.choice(canned))
         return reason
 
     async def _service_idle(self, bot) -> str | None:
@@ -578,41 +632,45 @@ class Images:
             return "service unreachable"
         return None if idle else "service busy"
 
-    async def _draw(self, bot, message, lines, reply_text, asked) -> str:
-        channel = message.channel
+    async def _draw(self, bot, message, lines, reply_text, asked, out: "Reply", request: str) -> str:
         if not asked and (bot.waiting > 0 or bot.llm_lock.locked()):
             return self._skip("chat model busy", asked)
         problem = await self._service_idle(bot)
         if problem:
             canned = BROKEN_LINES if problem == "service unreachable" else BUSY_LINES
-            return await self._decline(bot, message, asked, problem, canned)
+            return await self._decline(out, asked, problem, canned)
+        if asked:  # right away, so the asker sees it's happening; edited later
+            await out.say(PAINTING_LINE.format(minutes=minutes(self.estimate_s)))
 
-        context = list(lines[-PROMPT_CONTEXT:]) + [persona.Line(persona.BOT_NAME, reply_text, True)]
+        context = list(lines[-PROMPT_CONTEXT:])
+        if reply_text is not None:
+            context.append(persona.Line(persona.BOT_NAME, reply_text, True))
         started = time.monotonic()
         prompt = tidy_prompt(await bot.generate(build_prompt_messages(context, asked), canned_errors=False))
         log.info("image: prompt of %d words in %.1fs", len(prompt.split()), time.monotonic() - started)
+        if not prompt and asked:
+            prompt = fallback_prompt(request)
+            log.info("image: the prompt writer came back empty; drawing the request")
         verdict = await prompt_verdict(prompt, lambda p: image_check(bot, p))
         if verdict:
             canned = {"empty prompt": BROKEN_LINES, "prompt leak": HELD_LINES}
-            return await self._decline(bot, message, asked, verdict, canned.get(verdict, REFUSED_LINES))
+            return await self._decline(out, asked, verdict, canned.get(verdict, REFUSED_LINES))
 
         # someone else may have started a job while the prompt was written
         problem = await self._service_idle(bot)
         if problem:
             canned = BROKEN_LINES if problem == "service unreachable" else BUSY_LINES
-            return await self._decline(bot, message, asked, problem, canned)
-        if asked:
-            await bot.send_image(channel, message, text=PAINTING_LINE.format(minutes=minutes(self.estimate_s)))
+            return await self._decline(out, asked, problem, canned)
         job_started = self.gate.clock()
         t0 = time.monotonic()
         try:
             raw = await self.client.generate(bot.http_session, prompt)
         except ImageBusy as exc:
-            return await self._decline(bot, message, asked, f"service refused ({exc})", BUSY_LINES)
+            return await self._decline(out, asked, f"service refused ({exc})", BUSY_LINES)
         except ImageError as exc:
             self.gate.charge(message.author.id, job_started)
             log.warning("image: generation failed after %.0fs (%s)", time.monotonic() - t0, exc)
-            return await self._decline(bot, message, asked, "generation failed", BROKEN_LINES)
+            return await self._decline(out, asked, "generation failed", BROKEN_LINES)
         self.gate.charge(message.author.id, job_started)
         seconds = time.monotonic() - t0
         self.estimate_s = 0.7 * self.estimate_s + 0.3 * seconds
@@ -620,9 +678,9 @@ class Images:
             data, ext = await asyncio.to_thread(compress, raw)
         except ImageError as exc:
             log.warning("image: could not compress (%s)", exc)
-            return await self._decline(bot, message, asked, "compression failed", BROKEN_LINES)
+            return await self._decline(out, asked, "compression failed", BROKEN_LINES)
         filename = f"{persona.BOT_NAME.lower()}.{ext}"
-        sent = await bot.send_image(channel, message, fp=io.BytesIO(data), filename=filename)
+        sent = await out.picture(data, filename)
         log.info(
             "image %s (%s): %.0fs to draw, %d KB png -> %d KB %s; %d this hour",
             "posted" if sent else "NOT posted",

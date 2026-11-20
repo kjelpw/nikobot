@@ -629,17 +629,21 @@ class Nikobot(commands.Bot):
                 return False
         return safety.reply_check_clears(answer)
 
-    async def send(self, channel, text: str, reply_to: discord.Message) -> None:
+    async def send(self, channel, text: str, reply_to: discord.Message) -> discord.Message | None:
         try:
-            await channel.send(text, reference=reply_to.to_reference(fail_if_not_exists=False))
+            return await channel.send(text, reference=reply_to.to_reference(fail_if_not_exists=False))
         except discord.HTTPException as exc:
             log.warning("could not send message (HTTP %s)", exc.status)
+            return None
 
-    async def send_image(self, channel, reply_to: discord.Message, text=None, fp=None, filename=None) -> bool:
-        """For imagine.py: an image file or a short line, as a reply that pings nobody."""
+    async def send_image(self, channel, reply_to: discord.Message, text=None, fp=None, filename=None):
+        """For imagine.py: an image file or a short line, as a reply that pings nobody.
+
+        Returns the sent message (for edit_image), or None.
+        """
         extra = {"file": discord.File(fp, filename=filename)} if fp is not None else {}
         try:
-            await channel.send(
+            return await channel.send(
                 text,
                 reference=reply_to.to_reference(fail_if_not_exists=False),
                 allowed_mentions=discord.AllowedMentions.none(),
@@ -647,6 +651,19 @@ class Nikobot(commands.Bot):
             )
         except discord.HTTPException as exc:
             log.warning("image: could not send (HTTP %s)", exc.status)
+            return None
+
+    async def edit_image(self, msg: discord.Message, text=None, fp=None, filename=None) -> bool:
+        """For imagine.py: turn one of the bot's messages into the picture (or a new line)."""
+        changes = {"allowed_mentions": discord.AllowedMentions.none()}
+        if text is not None:
+            changes["content"] = text
+        if fp is not None:
+            changes["attachments"] = [discord.File(fp, filename=filename)]
+        try:
+            await msg.edit(**changes)
+        except discord.HTTPException as exc:
+            log.warning("image: could not edit (HTTP %s)", exc.status)
             return False
         return True
 
@@ -663,6 +680,7 @@ class Nikobot(commands.Bot):
             log.info("chat: too many queued, sent busy line")
             await self.send(message.channel, random.choice(persona.BUSY_LINES), message)
             return
+        asked_image = False
         self.waiting += 1
         try:
             async with message.channel.typing():
@@ -682,14 +700,20 @@ class Nikobot(commands.Bot):
                 trigger = self.to_line(current, captions) or trigger
                 lines = context_without_serious(self.to_lines(history, captions)) + [trigger]
                 lines = focus(lines, is_reply=message.reference is not None)
-                prompt = persona.build_chat_messages(
-                    lines, serious_hint=safety.is_serious([trigger.text])
-                )
-                text = await self.generate(prompt)
+                # An asked-for picture is the whole reply: one "painting…"
+                # message that becomes the picture (the owner, 2026-11-19:
+                # "it replied twice"), so no text reply is written for it.
+                asked_image = self.image_replies is not None and self.image_replies.asked(message, self.user.id)
+                text = None
+                if not asked_image:
+                    prompt = persona.build_chat_messages(
+                        lines, serious_hint=safety.is_serious([trigger.text])
+                    )
+                    text = await self.generate(prompt)
                 # A ping reply is filtered for slurs and prompt leaks, nothing
                 # else (the owner's rules, 2026-11-19). The full reply check is
                 # for chime-ins.
-                if text not in persona.CANNED_LINES:
+                if text is not None and text not in persona.CANNED_LINES:
                     if safety.has_slur(text):
                         log.info("chat: reply had a slur; sent a held line")
                         text = random.choice(persona.HELD_LINES)
@@ -698,9 +722,12 @@ class Nikobot(commands.Bot):
                         text = random.choice(persona.LEAK_LINES)
         finally:
             self.waiting -= 1
-        await self.send(message.channel, text, message)
-        if self.image_replies is not None:  # a picture, if asked for or by chance (imagine.py)
-            await self.image_replies.follow_up(self, message, lines, text)
+        if asked_image:
+            await self.image_replies.follow_up(self, message, lines, None)
+            return
+        sent = await self.send(message.channel, text, message)
+        if self.image_replies is not None:  # now and then a picture, attached to that reply
+            await self.image_replies.follow_up(self, message, lines, text, reply_msg=sent)
 
     # --- unprompted chime-ins ---------------------------------------------
 
