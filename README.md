@@ -11,6 +11,8 @@ A small Discord bot (discord.py 2.x) for a private server. It does three things:
   them cheese. Replies come from a local LLM served by [Ollama](https://ollama.com).
   It knows what the pictures and GIFs in the conversation show (see
   [Images and GIFs](#images-and-gifs)).
+  Ask it for a picture and it paints one, and now and then it adds one unasked
+  (see [Image replies](#image-replies)).
 - **Go-live posts.** When one of the Twitch channels in `secrets.py` starts
   streaming, it posts once in the configured channel: "*name* is live!" and
   the link, which Discord shows with Twitch's preview.
@@ -48,6 +50,21 @@ it decent is enforced in code, not left to the model:
   canned "that one stays in the drafts" line instead. It used to be an LLM
   check covering hate, sexual content and cruelty too; that one held a harmless
   8-ball answer and added 8-24 s to every reply.
+- **Images are "mostly SFW except where it's funny"** (the owner's rule,
+  2026-11-19), in every channel, age-restricted or not. The request and the
+  image prompt go through the slur filter, the prompt through the prompt-leak
+  check, a short word list for the clearest cases (`imagine.EXPLICIT_RE`:
+  nude, porn, gore, dismembered, swastika and the like, but not "naked mole
+  rat"), and then an image check: one short LLM call
+  (`imagine.IMAGE_CHECK_TEMPLATE`) that labels the picture `SEXUAL`, `GORE`,
+  `HATE` or `FINE`, and only an exact `FINE` passes. Crude,
+  gross-out and mildly rude jokes are fine at about a PG-13 level (cartoon
+  butts, farts, toilets, mild innuendo, cursed or absurd images). Nudity or
+  sexual content, real people shown in a sexual way, gore and hate are blocked.
+  An error or a timeout counts as a block. On 14 test prompts (2026-11-19)
+  the labels got all 14 right, where OK/BLOCK wordings got 10 or 11; the word
+  list is there because the uncensored model's answers swung with the wording. See
+  [Image replies](#image-replies).
 - **Chime-ins get the full check** (see below): their text must also pass the
   LLM reply check (`Nikobot.reply_clears`); only an exact `OK` (no slurs, hate,
   sexual content or cruelty) lets it through.
@@ -136,6 +153,8 @@ To set it up, register an application at <https://dev.twitch.tv/console/apps>
 - The bot needs Read Message History in the channels where it chats, so it can
   give the model a little context.
 - An Ollama server it can reach.
+- For image replies, the homelab's `imagegen` service (OpenAI-style
+  `/v1/images/generations` plus `/health`) on a network it can reach.
 
 ## Configuration
 
@@ -149,6 +168,7 @@ read-only, by default at `/app/secrets.py`. It defines:
 | `stream_channel` | the text channel ID for go-live posts (must be in one of those servers) |
 | `twitch_streamers` | list of Twitch logins (or `twitch.tv/...` links) to watch |
 | `twitch_client_id`, `twitch_client_secret` | the Twitch application's credentials |
+| `image_chance` | optional: the chance that a ping reply comes with an unasked image (default `0.05`, at most `0.25`; `0` means only when asked) |
 
 Go-live posts stay off until all four of the last settings are filled in. The
 startup log says which are missing.
@@ -166,6 +186,7 @@ Environment variables:
 | `OLLAMA_URL` | `http://ollama:11434` | Base URL of the Ollama server. |
 | `NIKOBOT_DATA_DIR` | `/data` | Where `messages.log` and `stream_state.json` live. |
 | `NIKOBOT_SECRETS` | `/app/secrets.py` | Path to `secrets.py`. |
+| `IMAGEGEN_URL` | `http://imagegen:8080` | Base URL of the image service. Empty turns image replies off. |
 
 The LLM is assumed to be slow and shared (CPU only), so requests are kept
 small: non-streaming, about 150 output tokens (plus a reasoning budget for
@@ -206,6 +227,46 @@ example `chime skipped: daily cap`), never with message content.
    prompt-leak check and the full LLM reply check (no slurs, hate, sexual content
    or cruelty). Any failure posts nothing. A chime-in never pings anyone.
 
+## Image replies
+
+The owner's ask (2026-11-19): "It should also be able to respond with generated
+images, sometimes, or if asked for it." Pictures come from the homelab's
+`imagegen` service (Qwen-Image-2.1 Turbo on the CPU), at 512×512.
+
+- **When asked.** A ping that asks for a picture gets one: "draw me…", "paint
+  a…", "can you sketch…", "make/generate/create an image/picture/pic/meme of…",
+  "show me a picture of…", "send a selfie". It's a regex (`imagine.wants_image`),
+  not an LLM call; `tests/test_imagine.py` lists what does and doesn't count
+  ("where do you draw the line" doesn't).
+- **Sometimes.** Any other ping reply gets one at `image_chance` (5% by
+  default), except a serious-looking ping, or when other chats are waiting for
+  the model. Chime-ins stay text-only.
+- **How.** The text reply is posted first, as always. Then the chat model
+  writes a one-sentence image prompt (it's told to keep it PG-13 and funny),
+  which goes through the checks in [Safety](#safety). For a request, the bot
+  says "🎨 painting… (~N min)", then posts the picture as a WebP reply to the
+  same message. Neither pings anyone. Drawing doesn't hold the chat model, so
+  other pings are answered meanwhile.
+- **How long.** 2 to 4 minutes at 512×512 (measured 2026-11-19: 246 s when
+  the weights had to come off the RAID, 121 s right after another image, plus
+  5-15 s to write and check the prompt). It isn't much faster than 1024×1024
+  (~5 min): loading the weights dominates. The "~N min" starts at 4 and
+  follows the recent jobs. A picture compresses to ~30-50 KB of WebP.
+- **Limits**, because the box is shared with production: one image at a time,
+  10 minutes per person between images, 6 an hour in total, a 10-minute
+  timeout, and the service must be idle (`/health`), so the bot never queues
+  behind someone else's picture. A refusal from the service (busy, or low on
+  memory) doesn't use up anyone's turn. The limits are kept in memory, so a
+  restart resets them. A timed-out job still finishes on the server; the next
+  one waits until it's idle.
+- **When it doesn't work out**, a request gets a canned in-character line (busy,
+  "my paint is still drying", "my crayons refuse" for a blocked prompt). A
+  random extra just doesn't happen.
+- **Logs** say what was decided, how long it took and how big the file was,
+  never the prompt or any chat text.
+- **Turning it off:** `image_chance = 0` in `secrets.py` stops the unasked ones;
+  an empty `IMAGEGEN_URL` stops all of them. The startup log says which.
+
 ## Running
 
 ```sh
@@ -223,8 +284,8 @@ The image runs as UID 1000. `secrets.py` must be readable by that user, and
 ## Tests
 
 The pure logic (blocklist, chime gates, mention stripping, prompt building, the
-`!ip` check, the image host allowlist, picking, caching and decoding, and so
-on) is covered by pytest:
+`!ip` check, the image host allowlist, picking, caching and decoding, image
+requests and their limits, and so on) is covered by pytest:
 
 ```sh
 docker run --rm -v "$PWD":/src:ro -w /src python:3.12-slim \
