@@ -31,6 +31,14 @@ Rules this file enforces (the owner's, 2026-11-18):
   "[image: ...]" in the chat line. Only when a reply or chime-in is being
   built, only from Discord's own hosts, never stored, captions never logged,
   and a failure or a slow caption only ever gives "[image]".
+- Lore (lore.py, the owner's ask 2026-11-19: a personality that evolves),
+  only when `evolve` is on in secrets.py: once a day at a quiet hour, the idle
+  model turns the last day of chat (the owner's servers, public non-NSFW
+  channels, nothing serious) into a few running jokes, which ping replies and
+  chime-ins get as flavor. The model's answer is untrusted and every bullet is
+  checked. It never makes a reply wait: a reply cancels the update. `!lore`
+  shows it, `!forget` (Manage Server only) clears it, and it never reaches
+  stdout.
 """
 from __future__ import annotations
 
@@ -54,8 +62,9 @@ import safety
 import chime
 import images
 import imagine
+import lore
 import streams
-from llm import LLMError, LLMTimeout, Ollama
+from llm import LLMError, LLMTimeout, ModelLock, Ollama
 
 log = logging.getLogger("nikobot")
 
@@ -186,6 +195,21 @@ def image_config(secrets, url: str) -> tuple[ImageConfig | None, str]:
     return ImageConfig(url, chance), "ok"
 
 
+_ON = ("1", "true", "yes", "on")
+_OFF = ("", "0", "false", "no", "off", "none")
+
+
+def lore_config(secrets) -> tuple[bool, str]:
+    """Lore (an evolving personality): `evolve` in secrets.py. Off unless it's set on."""
+    raw = getattr(secrets, "evolve", None)
+    value = str(raw).strip().lower() if isinstance(raw, (bool, int, str)) or raw is None else "?"
+    if raw is None or value in _OFF:
+        return False, "evolve is off"
+    if value in _ON:
+        return True, "ok"
+    return False, "evolve isn't True or False"
+
+
 def context_without_serious(lines: list[persona.Line]) -> list[persona.Line]:
     """Earlier messages for the joke's context, minus any on serious topics.
 
@@ -219,6 +243,29 @@ class Cooldown:
         return True
 
 
+def channel_nsfw(channel) -> bool:
+    """Age-restricted? (A thread follows its parent; a DM has no such flag.)"""
+    check = getattr(channel, "is_nsfw", None)
+    try:
+        return bool(check()) if callable(check) else False
+    except Exception:  # noqa: BLE001 - a missing parent and the like
+        return False
+
+
+def lore_channel(channel, everyone) -> bool:
+    """A channel lore may learn from: not NSFW, and readable by everyone in the server.
+
+    Lore shows up in every channel (and in !lore), so it must not carry a
+    private channel's chat into public ones.
+    """
+    if channel_nsfw(channel) or getattr(channel, "type", None) == discord.ChannelType.private_thread:
+        return False
+    try:
+        return bool(channel.permissions_for(everyone).view_channel)
+    except Exception:  # noqa: BLE001 - categories, missing parents: not learnable
+        return False
+
+
 def message_record(message) -> str:
     """One JSON line describing a message, for the message log."""
     guild = message.guild
@@ -230,8 +277,10 @@ def message_record(message) -> str:
             "guild_id": guild.id if guild is not None else None,
             "channel": getattr(channel, "name", None) or "DM",
             "channel_id": channel.id,
+            "nsfw": channel_nsfw(channel),
             "author": str(message.author),
             "author_id": message.author.id,
+            "name": getattr(message.author, "display_name", None),
             "bot": bool(message.author.bot),
             "content": message.content,
             "attachments": [a.url for a in message.attachments],
@@ -304,6 +353,35 @@ async def hush_command(ctx: commands.Context) -> None:
     await ctx.send(persona.HUSH_LINE.format(days=HUSH_DAYS))
 
 
+def lore_here(ctx: commands.Context) -> bool:
+    """!lore and !forget: only where lore is on, in one of the owner's servers, never in DMs."""
+    store = getattr(ctx.bot, "lore_store", None)
+    guild_id = ctx.guild.id if ctx.guild is not None else None
+    return store is not None and ip_allowed(guild_id, ctx.bot.allowed_guilds)
+
+
+@commands.command(name="lore", help="Show the running jokes the bot has picked up")
+async def lore_command(ctx: commands.Context) -> None:
+    if not lore_here(ctx):
+        return
+    await ctx.send(lore.show(ctx.bot.lore_store.current()), allowed_mentions=discord.AllowedMentions.none())
+
+
+@commands.command(name="forget", help="Clear the bot's lore (Manage Server only)")
+async def forget_command(ctx: commands.Context) -> None:
+    if not lore_here(ctx):
+        return
+    perms = getattr(ctx.author, "guild_permissions", None)
+    if not getattr(perms, "manage_guild", False):
+        log.info("lore: !forget refused (no Manage Server)")
+        await ctx.send(lore.NOT_ALLOWED_LINE, allowed_mentions=discord.AllowedMentions.none())
+        return
+    saved = ctx.bot.lore_store.forget(lore.local_now())
+    log.info("lore: cleared by !forget%s", "" if saved else " (in memory only: lore.json not writable)")
+    line = lore.FORGOT_LINE if saved else lore.FORGOT_UNSAVED_LINE
+    await ctx.send(line, allowed_mentions=discord.AllowedMentions.none())
+
+
 class Nikobot(commands.Bot):
     def __init__(
         self,
@@ -313,6 +391,8 @@ class Nikobot(commands.Bot):
         chime_settings: ChimeConfig | None = None,
         chime_note: str = "not configured",
         image_settings: ImageConfig | None = None,
+        lore_on: bool = False,
+        lore_note: str = "not configured",
     ):
         intents = discord.Intents.default()
         intents.message_content = True  # privileged: enable it in the developer portal
@@ -334,7 +414,8 @@ class Nikobot(commands.Bot):
         self.stream_channel_problem: str | None = None
         self.cooldown = Cooldown(CHAT_COOLDOWN_S)
         self.message_log = make_message_log(DATA_DIR / "messages.log")
-        self.llm_lock = asyncio.Lock()
+        # a reply always gets it: the lore update gives way (llm.ModelLock)
+        self.llm_lock = ModelLock()
         self.waiting = 0
         self.http_session: aiohttp.ClientSession | None = None
         self.llm: Ollama | None = None
@@ -351,6 +432,14 @@ class Nikobot(commands.Bot):
             )
             self.add_command(hush_command)
         self.image_replies = imagine.Images(image_settings.url, image_settings.chance) if image_settings else None
+        self.lore_note = lore_note
+        self.lore_store: lore.LoreStore | None = None
+        self.lore_schedule: lore.Schedule | None = None
+        if lore_on:
+            self.lore_store = lore.LoreStore(DATA_DIR / "lore.json")
+            self.lore_schedule = lore.Schedule.for_store(self.lore_store)
+            self.add_command(lore_command)
+            self.add_command(forget_command)
 
     async def setup_hook(self) -> None:
         self.http_session = aiohttp.ClientSession()
@@ -373,6 +462,8 @@ class Nikobot(commands.Bot):
                 self.stream_settings.client_id, self.stream_settings.client_secret, self.http_session
             )
             self.stream_watch.start()
+        if self.lore_store is not None:
+            self.lore_watch.start()
 
     # --- go-live posts -----------------------------------------------------
 
@@ -430,6 +521,69 @@ class Nikobot(commands.Bot):
                 continue
             log.info("streams: posted go-live for %s", stream.login)
 
+    # --- lore: the daily update ---------------------------------------------
+
+    @tasks.loop(minutes=lore.TICK_MINUTES)
+    async def lore_watch(self) -> None:
+        try:
+            await lore.tick(self.lore_schedule, lore.local_now(), self.lore_idle, self.lore_update)
+        except Exception as exc:  # noqa: BLE001 - an exception would stop this loop for good
+            log.warning("lore: %s", type(exc).__name__)
+
+    @lore_watch.before_loop
+    async def before_lore_watch(self) -> None:
+        await self.wait_until_ready()
+
+    async def lore_idle(self) -> bool:
+        """Nobody is using the model, nobody is waiting for it, and it's already loaded."""
+        if self.llm_lock.locked() or self.waiting > 0:
+            return False
+        try:
+            return await self.llm.model_loaded()
+        except Exception:  # noqa: BLE001 - unreachable counts as busy
+            return False
+
+    def lore_channels(self) -> frozenset[int]:
+        """The channels lore may learn from, as Discord sees them right now."""
+        ids = set()
+        for guild in self.guilds:
+            if guild.id not in self.allowed_guilds:
+                continue
+            for channel in [*guild.channels, *guild.threads]:
+                if lore_channel(channel, guild.default_role):
+                    ids.add(channel.id)
+        return frozenset(ids)
+
+    async def lore_update(self) -> str:
+        """Read the last day of chat and ask the model for the new lore (lore.update)."""
+        now = lore.local_now()
+        started = time.monotonic()
+        chat = await asyncio.to_thread(
+            lore.read_chat, DATA_DIR, now, self.allowed_guilds, self.user.id,
+            self.lore_channels(), self.lore_store.read_since(), MESSAGE_LOG_FILES,
+        )
+        log.info(
+            "lore: %d usable of %d message(s) in the last day, %d chars, read in %.1fs (left out: %s)",
+            len(chat.entries), chat.read, chat.chars, time.monotonic() - started,
+            ", ".join(f"{k} {v}" for k, v in sorted(chat.left_out.items())) or "none",
+        )
+
+        async def ask(messages: list[dict]) -> str:
+            async with self.llm_lock.background():
+                reply = await self.llm.chat(
+                    messages, num_predict=lore.UPDATE_TOKENS, temperature=lore.UPDATE_TEMPERATURE,
+                    timeout=lore.UPDATE_TIMEOUT_S,
+                )
+            return reply.text
+
+        return await lore.update(self.lore_store, chat, ask, now)
+
+    def lore_for(self, text: str | None = None) -> tuple[str, ...]:
+        """The lore for a prompt: none when it's off, or for a serious-looking ping."""
+        if self.lore_store is None or (text is not None and safety.is_serious([text])):
+            return ()
+        return self.lore_store.current()
+
     async def close(self) -> None:
         await super().close()
         if self.http_session is not None:
@@ -462,6 +616,10 @@ class Nikobot(commands.Bot):
             )
         else:
             log.info("chime-ins off (%s)", self.chime_note)
+        if self.lore_store is not None:
+            log.info("lore on (%s)", self.lore_store.status())
+        else:
+            log.info("lore off (%s)", self.lore_note)
         for guild in self.guilds:
             log.info(
                 "in guild %s (%s): %s",
@@ -710,6 +868,7 @@ class Nikobot(commands.Bot):
                         lines,
                         serious_hint=safety.is_serious([trigger.text]),
                         voice=persona.pick_voice(random),
+                        lore=self.lore_for(trigger.text),  # none on a serious-looking ping
                     )
                     text = await self.generate(prompt)
                 # A ping reply is filtered for slurs and prompt leaks, nothing
@@ -772,7 +931,8 @@ class Nikobot(commands.Bot):
             return
         async with channel.typing():
             prompt = persona.build_chat_messages(
-                lines, direction=persona.CHIME_DIRECTION, voice=persona.pick_voice(random)
+                lines, direction=persona.CHIME_DIRECTION, voice=persona.pick_voice(random),
+                lore=self.lore_for(),
             )
             text = await self.generate(prompt, canned_errors=False)
             if not text:
@@ -812,11 +972,14 @@ def main() -> None:
     settings, note = stream_config(secrets)
     chimes, chime_note = chime_config(secrets, allowed)
     replies, replies_note = image_config(secrets, imagine.IMAGEGEN_URL)
+    lore_on, lore_note = lore_config(secrets)
     if replies is not None:
         log.info("image replies on: when asked, and %.0f%% of other ping replies", replies.chance * 100)
     else:
         log.info("image replies off (%s)", replies_note)
-    Nikobot(allowed, settings, note, chimes, chime_note, replies).run(secrets.token, log_handler=None)
+    Nikobot(allowed, settings, note, chimes, chime_note, replies, lore_on, lore_note).run(
+        secrets.token, log_handler=None
+    )
 
 
 if __name__ == "__main__":
