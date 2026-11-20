@@ -5,11 +5,13 @@ Rules this file enforces (the owner's, 2026-11-18):
 - It only ever speaks when asked: an @mention or reply to it, or `!ip`.
   A ping always gets an answer, serious topic or not (crisis language gets
   the fixed support line; a serious-looking ping gets a plain answer).
-  The ping reply is filtered for slurs only (2026-11-19); a chime-in, if one
-  is ever wired up, must also pass the full reply check (reply_clears).
-  The one exception is the go-live post (streams.py): a fixed template, never
-  model text, only in the one configured channel, never pinging anyone. The
-  chime-in code in chime.py is not wired up.
+  The ping reply is filtered for slurs and prompt leaks only (2026-11-19); a
+  chime-in must also pass the full reply check (reply_clears).
+  Two exceptions: the go-live post (streams.py), a fixed template, never
+  model text, only in the one configured channel, never pinging anyone; and
+  rare chime-ins (chime.py, the owner's ask 2026-11-19), only in the servers
+  in chime_guilds, at most one a day, censored by the full reply check, and
+  silenced for a week by !hush.
 - It shows no Discord status (the owner removed it, 2026-11-18).
 - Only in the owner's own servers (the guild IDs in secrets.py). It ignores
   every other server and leaves any new one it gets added to.
@@ -37,6 +39,7 @@ from discord.ext import commands, tasks
 
 import persona
 import safety
+import chime
 import streams
 from llm import LLMError, LLMTimeout, Ollama
 
@@ -55,6 +58,9 @@ MESSAGE_LOG_FILES = 10
 CHAT_TYPES = (discord.MessageType.default, discord.MessageType.reply)
 DIG = ["dig", "-4", "+short", "myip.opendns.com", "@resolver1.opendns.com"]
 STREAM_POLL_S = 60
+BLOCKLIST_SCAN = 15  # messages the serious-topic list checks before a chime-in
+HUSH_DAYS = 7
+MAX_CHIME_CHANCE = 0.25
 
 
 def guild_ids(*values) -> frozenset[int]:
@@ -102,6 +108,29 @@ def stream_config(secrets) -> tuple[StreamConfig | None, str]:
     if missing:
         return None, "missing " + ", ".join(missing)
     return StreamConfig(next(iter(channel)), logins, client_id, client_secret), "ok"
+
+
+@dataclass(frozen=True)
+class ChimeConfig:
+    guilds: frozenset[int]
+    chance: float
+
+
+def chime_config(secrets, allowed: frozenset[int]) -> tuple[ChimeConfig | None, str]:
+    """Chime-in settings from secrets.py (chime_guilds, chime_chance), or (None, why not)."""
+    raw = getattr(secrets, "chime_guilds", None)
+    guilds = guild_ids(*raw) if isinstance(raw, (list, tuple, set, frozenset)) else guild_ids(raw)
+    if not guilds:
+        return None, "no chime_guilds"
+    if not guilds <= allowed:
+        return None, "chime_guilds lists a server that isn't one of the owner's"
+    try:
+        chance = float(getattr(secrets, "chime_chance", 0.02))
+    except (TypeError, ValueError):
+        return None, "chime_chance isn't a number"
+    if not 0 < chance <= MAX_CHIME_CHANCE:
+        return None, f"chime_chance must be above 0 and at most {MAX_CHIME_CHANCE}"
+    return ChimeConfig(guilds, chance), "ok"
 
 
 def context_without_serious(lines: list[persona.Line]) -> list[persona.Line]:
@@ -202,12 +231,24 @@ async def ip_command(ctx: commands.Context) -> None:
     await ctx.send(ip or "Couldn't look up the IP right now.")
 
 
+@commands.command(name="hush", help=f"Stop unprompted chime-ins for {HUSH_DAYS} days")
+async def hush_command(ctx: commands.Context) -> None:
+    gate = ctx.bot.gate
+    if gate is None or ctx.guild is None or ctx.guild.id not in gate.guilds:
+        return  # only where chime-ins are on
+    gate.state.hush(time.time(), days=HUSH_DAYS)
+    log.info("chime: hushed for %d days", HUSH_DAYS)
+    await ctx.send(persona.HUSH_LINE.format(days=HUSH_DAYS))
+
+
 class Nikobot(commands.Bot):
     def __init__(
         self,
         allowed_guilds: frozenset[int],
         stream_settings: StreamConfig | None = None,
         stream_note: str = "not configured",
+        chime_settings: ChimeConfig | None = None,
+        chime_note: str = "not configured",
     ):
         intents = discord.Intents.default()
         intents.message_content = True  # privileged: enable it in the developer portal
@@ -234,6 +275,16 @@ class Nikobot(commands.Bot):
         self.http_session: aiohttp.ClientSession | None = None
         self.llm: Ollama | None = None
         self.add_command(ip_command)
+        self.chime_note = chime_note
+        self.gate: chime.ChimeGate | None = None
+        if chime_settings is not None:
+            self.gate = chime.ChimeGate(
+                frozenset(),
+                chime.ChimeState(DATA_DIR / "chime_state.json"),
+                chance=chime_settings.chance,
+                guilds=chime_settings.guilds,
+            )
+            self.add_command(hush_command)
 
     async def setup_hook(self) -> None:
         self.http_session = aiohttp.ClientSession()
@@ -324,6 +375,14 @@ class Nikobot(commands.Bot):
             )
         else:
             log.info("go-live posts off (%s)", self.stream_note)
+        if self.gate is not None:
+            log.info(
+                "chime-ins on in %d server(s), %.0f%% per eligible message, at most one a day",
+                len(self.gate.guilds),
+                self.gate.chance * 100,
+            )
+        else:
+            log.info("chime-ins off (%s)", self.chime_note)
         for guild in self.guilds:
             log.info(
                 "in guild %s (%s): %s",
@@ -356,11 +415,17 @@ class Nikobot(commands.Bot):
             return
         if message.type not in CHAT_TYPES:
             return
+        chiming = self.gate is not None and self.gate.allowed_here(message.channel.id, message.guild.id)
+        if chiming:
+            self.gate.tracker.record(message.channel.id, message.author.id, time.time())
         if message.content.startswith(self.command_prefix):
             await self.process_commands(message)
             return
         if self.addressed(message):
             await self.chat(message)
+            return
+        if chiming:
+            await self.maybe_chime(message)
 
     def record(self, message: discord.Message) -> None:
         if self.message_log is None:
@@ -405,26 +470,26 @@ class Nikobot(commands.Bot):
         history.reverse()
         return [line for m in history if (line := self.to_line(m)) is not None]
 
-    async def generate(self, messages: list[dict]) -> str:
-        """Run one reply. Errors become a canned in-character line."""
+    async def generate(self, messages: list[dict], canned_errors: bool = True) -> str:
+        """Run one reply. Errors become a canned in-character line, or "" if not canned."""
         async with self.llm_lock:
             started = time.monotonic()
             try:
                 reply = await self.llm.chat(messages)
             except LLMTimeout:
                 log.warning("llm: timed out after %.0fs", time.monotonic() - started)
-                return random.choice(persona.LOADING_LINES)
+                return random.choice(persona.LOADING_LINES) if canned_errors else ""
             except (LLMError, aiohttp.ClientError, ValueError) as exc:
                 log.warning("llm: %s %s", type(exc).__name__, exc if isinstance(exc, LLMError) else "")
-                return random.choice(persona.BROKEN_LINES)
+                return random.choice(persona.BROKEN_LINES) if canned_errors else ""
         if persona.leaked_reasoning(reply.text):
             log.info("llm: stripped the model's planning from the start of its reply")
         text = persona.tidy_reply(reply.text, reply.truncated)
         log.info("llm: %d chars in %.1fs", len(text), time.monotonic() - started)
-        return text or random.choice(persona.EMPTY_LINES)
+        return text or (random.choice(persona.EMPTY_LINES) if canned_errors else "")
 
     async def reply_clears(self, text: str) -> bool:
-        """The full reply check, for chime-ins only (not wired up yet).
+        """The full reply check, for chime-ins only.
 
         The owner's rule (2026-11-19): a ping reply only goes through the slur
         filter, but an unprompted chime-in must also pass this: the model says
@@ -474,14 +539,72 @@ class Nikobot(commands.Bot):
                     lines, serious_hint=safety.is_serious([trigger.text])
                 )
                 text = await self.generate(prompt)
-                # A ping reply is filtered for slurs and nothing else (the
-                # owner's rule, 2026-11-19). The full reply check is for chime-ins.
-                if text not in persona.CANNED_LINES and safety.has_slur(text):
-                    log.info("chat: reply had a slur; sent a held line")
-                    text = random.choice(persona.HELD_LINES)
+                # A ping reply is filtered for slurs and prompt leaks, nothing
+                # else (the owner's rules, 2026-11-19). The full reply check is
+                # for chime-ins.
+                if text not in persona.CANNED_LINES:
+                    if safety.has_slur(text):
+                        log.info("chat: reply had a slur; sent a held line")
+                        text = random.choice(persona.HELD_LINES)
+                    elif safety.echoes_prompt(text, persona.prompt_texts()):
+                        log.info("chat: reply repeated the persona prompt; sent a decoy line")
+                        text = random.choice(persona.LEAK_LINES)
         finally:
             self.waiting -= 1
         await self.send(message.channel, text, message)
+
+    # --- unprompted chime-ins ---------------------------------------------
+
+    async def maybe_chime(self, message: discord.Message) -> None:
+        """Rare, gated, censored chime-ins (the owner's ask, 2026-11-19).
+
+        Every gate in chime.py must pass, and the text must then clear the slur
+        filter, the prompt-leak check and the full LLM reply check. Nothing is
+        posted on any failure: no canned lines, no pings.
+        """
+        channel = message.channel
+        now = time.time()
+        lines: list[persona.Line] = []
+
+        async def recent_texts() -> list[str]:
+            lines[:] = await self.recent_lines(channel, BLOCKLIST_SCAN)
+            return [line.text for line in lines]
+
+        async def classify() -> bool:
+            async with self.llm_lock:
+                answer = await self.llm.classify(persona.build_classifier_messages(lines))
+            return persona.classifier_says_yes(answer)
+
+        decision = await self.gate.evaluate(
+            channel.id,
+            False,
+            now,
+            recent_texts=recent_texts,
+            model_ready=self.llm.model_loaded,
+            classify=classify,
+            llm_busy=lambda: self.llm_lock.locked() or self.waiting > 0,
+            guild_id=message.guild.id,
+        )
+        if not decision.ok:
+            return
+        async with channel.typing():
+            prompt = persona.build_chat_messages(lines, direction=persona.CHIME_DIRECTION)
+            text = await self.generate(prompt, canned_errors=False)
+            if not text:
+                log.info("chime: nothing usable generated; not posting")
+                return
+            if safety.has_slur(text) or safety.echoes_prompt(text, persona.prompt_texts()):
+                log.info("chime: slur or prompt leak; not posting")
+                return
+            if not await self.reply_clears(text):
+                log.info("chime: reply check did not clear; not posting")
+                return
+        try:
+            await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException as exc:
+            log.warning("chime: could not post (HTTP %s)", exc.status)
+            return
+        log.info("chime: posted")
 
 
 def main() -> None:
@@ -502,7 +625,8 @@ def main() -> None:
     if not allowed:
         raise SystemExit("no guild IDs in secrets.py (guild_permission/guild_permission2); refusing to start")
     settings, note = stream_config(secrets)
-    Nikobot(allowed, settings, note).run(secrets.token, log_handler=None)
+    chimes, chime_note = chime_config(secrets, allowed)
+    Nikobot(allowed, settings, note, chimes, chime_note).run(secrets.token, log_handler=None)
 
 
 if __name__ == "__main__":
