@@ -707,7 +707,9 @@ class Nikobot(commands.Bot):
                 text = None
                 if not asked_image:
                     prompt = persona.build_chat_messages(
-                        lines, serious_hint=safety.is_serious([trigger.text])
+                        lines,
+                        serious_hint=safety.is_serious([trigger.text]),
+                        voice=persona.pick_voice(random),
                     )
                     text = await self.generate(prompt)
                 # A ping reply is filtered for slurs and prompt leaks, nothing
@@ -769,7 +771,9 @@ class Nikobot(commands.Bot):
         if not decision.ok:
             return
         async with channel.typing():
-            prompt = persona.build_chat_messages(lines, direction=persona.CHIME_DIRECTION)
+            prompt = persona.build_chat_messages(
+                lines, direction=persona.CHIME_DIRECTION, voice=persona.pick_voice(random)
+            )
             text = await self.generate(prompt, canned_errors=False)
             if not text:
                 log.info("chime: nothing usable generated; not posting")
