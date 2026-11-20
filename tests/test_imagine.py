@@ -436,6 +436,9 @@ class FakeBot:
         self.check = check
         self.sent = []
         self.generated = 0
+        self.posts = 0
+        self.edits = []
+        self.edit_fails = False
 
         async def chat(messages, num_predict, temperature):
             if isinstance(self.check, Exception):
@@ -453,7 +456,14 @@ class FakeBot:
 
     async def send_image(self, channel, reply_to, text=None, fp=None, filename=None):
         self.sent.append(("file", filename, fp.read()) if fp is not None else ("text", text))
-        return True
+        self.posts += 1
+        return SimpleNamespace(id=self.posts)
+
+    async def edit_image(self, msg, text=None, fp=None, filename=None):
+        # recorded like a send, so the sequence reads the same; `posts` counts messages
+        self.sent.append(("file", filename, fp.read()) if fp is not None else ("text", text))
+        self.edits.append((msg.id, text, fp is not None))
+        return not self.edit_fails
 
 
 def message(content, author=PAL):
@@ -461,13 +471,13 @@ def message(content, author=PAL):
                            channel=SimpleNamespace(name="general"))
 
 
-def follow(content, reply="Certainly! Synergy! 🚀", dice=0.0, client=None, fake=None, clock=None):
+def follow(content, reply="Certainly! Synergy! 🚀", dice=0.0, client=None, fake=None, clock=None, reply_msg=None):
     clock = clock or Clock()
     client = client or FakeClient()
     fake = fake or FakeBot()
     images = imagine.Images(URL, 0.05, gate=ImageGate(0.05, rng=Dice(dice), clock=clock), client=client)
     lines = [persona.Line("Pal", content)]
-    result = asyncio.run(images.follow_up(fake, message(content), lines, reply))
+    result = asyncio.run(images.follow_up(fake, message(content), lines, reply, reply_msg=reply_msg))
     assert images.gate.busy is False  # the job slot is always released
     return result, fake, client, images
 
@@ -510,7 +520,8 @@ def test_busy_service(asked, expected):
 def test_busy_after_the_prompt_was_written():
     result, fake, client, _ = follow("draw me a goose", client=FakeClient(idle=(True, False)))
     assert result == "service busy" and fake.generated == 1 and client.prompts == []
-    assert texts(fake) == list(imagine.BUSY_LINES)
+    # one message: "painting…", edited into the reason
+    assert texts(fake) == [imagine.PAINTING_LINE.format(minutes=imagine.minutes(imagine.ESTIMATE_S))] + list(imagine.BUSY_LINES) and fake.posts == 1
 
 
 @pytest.mark.parametrize("asked", [True, False])
@@ -546,8 +557,8 @@ def test_image_check_block(asked):
     fake = FakeBot(check="SEXUAL")
     result, fake, client, _ = follow("draw me a goose" if asked else "hello", fake=fake)
     assert result == "image check" and client.prompts == []
-    if asked:  # "my crayons refuse"
-        assert len(fake.sent) == 1 and texts(fake)[0] in imagine.REFUSED_LINES
+    if asked:  # "my crayons refuse", edited into the one "painting…" message
+        assert fake.posts == 1 and len(fake.sent) == 2 and texts(fake)[-1] in imagine.REFUSED_LINES
     else:
         assert fake.sent == []
 
@@ -556,7 +567,7 @@ def test_image_check_error_blocks():
     from llm import LLMTimeout
 
     result, fake, client, _ = follow("draw me a goose", fake=FakeBot(check=LLMTimeout()))
-    assert result == "image check" and client.prompts == [] and texts(fake)[0] in imagine.REFUSED_LINES
+    assert result == "image check" and client.prompts == [] and texts(fake)[-1] in imagine.REFUSED_LINES
 
 
 def test_slur_in_the_request(monkeypatch):
@@ -569,7 +580,7 @@ def test_slur_in_the_request(monkeypatch):
 def test_slur_in_the_prompt(monkeypatch):
     monkeypatch.setattr(safety, "SLUR_HASHES", frozenset({safety.slur_hash("blorf")}))
     result, fake, client, _ = follow("draw me a goose", fake=FakeBot(prompt="A blorf in a hat."))
-    assert result == "slur" and client.prompts == [] and texts(fake)[0] in imagine.REFUSED_LINES
+    assert result == "slur" and client.prompts == [] and texts(fake)[-1] in imagine.REFUSED_LINES
 
 
 def test_no_image_after_a_canned_text_reply():
@@ -599,7 +610,8 @@ def test_cooldown_line_says_how_long():
 
 def test_an_unexpected_error_never_escapes():
     result, fake, _, images = follow("draw me a goose", fake=FakeBot(prompt=RuntimeError("boom")))
-    assert result == "unexpected error" and texts(fake) == list(imagine.BROKEN_LINES)
+    assert result == "unexpected error" and texts(fake) == [imagine.PAINTING_LINE.format(minutes=imagine.minutes(imagine.ESTIMATE_S))] + list(imagine.BROKEN_LINES)
+    assert fake.posts == 1
 
 
 def test_logs_never_carry_the_prompt_or_chat_text(caplog):
@@ -615,13 +627,50 @@ def test_logs_never_carry_the_prompt_or_chat_text(caplog):
 
 def test_wiring_in_bot():
     chat = inspect.getsource(bot.Nikobot.chat)
-    # the text reply goes out first; the image follows
-    assert chat.index("await self.send(message.channel, text, message)") < chat.index("self.image_replies.follow_up(")
+    # a random extra: the text reply goes out first, and the picture is attached to it
+    assert chat.index("sent = await self.send(message.channel, text, message)") < chat.index(
+        "follow_up(self, message, lines, text, reply_msg=sent)")
+    # an asked-for picture is the whole reply: no text reply is written for it
+    assert "self.image_replies.asked(message, self.user.id)" in chat and "if not asked_image:" in chat
+    assert "follow_up(self, message, lines, None)" in chat
     # chime-ins stay text-only
     chime_src = inspect.getsource(bot.Nikobot.maybe_chime)
     assert "image_replies" not in chime_src and "imagine" not in chime_src and "send_image" not in chime_src
     # image replies never ping anyone
     assert "AllowedMentions.none()" in inspect.getsource(bot.Nikobot.send_image)
-    assert "follow_up(self, message, lines, text)" in chat
+    assert "AllowedMentions.none()" in inspect.getsource(bot.Nikobot.edit_image)
     # the prompt writer sees the same focused lines as the text reply did
-    assert chat.index("lines = focus(") < chat.index("follow_up(self, message, lines, text)")
+    assert chat.index("lines = focus(") < chat.index("follow_up(self, message, lines, None)")
+
+
+
+# --- one message per picture (the owner, 2026-11-19: "it replied twice") -------------
+
+def test_an_asked_picture_is_one_message_that_becomes_the_picture():
+    result, fake, _, _ = follow("draw me a goose", reply=None)
+    assert result == "posted" and fake.posts == 1
+    assert fake.sent[0] == ("text", imagine.PAINTING_LINE.format(minutes=imagine.minutes(imagine.ESTIMATE_S)))
+    msg_id, caption, has_file = fake.edits[-1]
+    assert msg_id == 1 and has_file and caption in imagine.DONE_LINES
+
+
+def test_a_random_extra_is_attached_to_the_text_reply():
+    reply_msg = SimpleNamespace(id=99)
+    result, fake, _, _ = follow("hello", reply_msg=reply_msg)
+    assert result == "posted" and fake.posts == 0  # no new message
+    assert fake.edits == [(99, None, True)]  # the text reply keeps its words
+
+
+def test_a_failed_edit_falls_back_to_a_new_reply():
+    fake = FakeBot()
+    fake.edit_fails = True
+    result, fake, _, _ = follow("draw me a goose", reply=None, fake=fake)
+    assert result == "posted" and fake.posts == 2 and fake.sent[-1][0] == "file"
+
+
+def test_an_empty_prompt_draws_the_request_itself():
+    # 2026-11-19: the writer thought for 34 s and returned nothing
+    result, fake, client, _ = follow("draw me a goose doing its taxes", reply=None, fake=FakeBot(prompt=""))
+    assert result == "posted" and client.prompts == ["A goofy cartoon: draw me a goose doing its taxes"]
+    result, fake, client, _ = follow("hello", fake=FakeBot(prompt=""))  # a random extra just skips
+    assert result == "empty prompt" and client.prompts == []
