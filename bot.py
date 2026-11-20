@@ -353,31 +353,38 @@ async def hush_command(ctx: commands.Context) -> None:
     await ctx.send(persona.HUSH_LINE.format(days=HUSH_DAYS))
 
 
-def lore_here(ctx: commands.Context) -> bool:
-    """!lore and !forget: only where lore is on, in one of the owner's servers, never in DMs."""
-    store = getattr(ctx.bot, "lore_store", None)
+def lore_here(ctx: commands.Context):
+    """!lore and !forget: this server's own lore store, or None (off, a DM, not the owner's).
+
+    Each server has its own lore and never sees another's (the owner, 2026-11-20:
+    bleeding between servers "would be VERY bad").
+    """
     guild_id = ctx.guild.id if ctx.guild is not None else None
-    return store is not None and ip_allowed(guild_id, ctx.bot.allowed_guilds)
+    if not ip_allowed(guild_id, ctx.bot.allowed_guilds):
+        return None
+    return (getattr(ctx.bot, "lore_stores", None) or {}).get(guild_id)
 
 
 @commands.command(name="lore", help="Show the running jokes the bot has picked up")
 async def lore_command(ctx: commands.Context) -> None:
-    if not lore_here(ctx):
+    store = lore_here(ctx)
+    if store is None:
         return
-    await ctx.send(lore.show(ctx.bot.lore_store.current()), allowed_mentions=discord.AllowedMentions.none())
+    await ctx.send(lore.show(store.current()), allowed_mentions=discord.AllowedMentions.none())
 
 
 @commands.command(name="forget", help="Clear the bot's lore (Manage Server only)")
 async def forget_command(ctx: commands.Context) -> None:
-    if not lore_here(ctx):
+    store = lore_here(ctx)
+    if store is None:
         return
     perms = getattr(ctx.author, "guild_permissions", None)
     if not getattr(perms, "manage_guild", False):
         log.info("lore: !forget refused (no Manage Server)")
         await ctx.send(lore.NOT_ALLOWED_LINE, allowed_mentions=discord.AllowedMentions.none())
         return
-    saved = ctx.bot.lore_store.forget(lore.local_now())
-    log.info("lore: cleared by !forget%s", "" if saved else " (in memory only: lore.json not writable)")
+    saved = store.forget(lore.local_now())
+    log.info("lore: cleared by !forget%s", "" if saved else " (in memory only: its lore file is not writable)")
     line = lore.FORGOT_LINE if saved else lore.FORGOT_UNSAVED_LINE
     await ctx.send(line, allowed_mentions=discord.AllowedMentions.none())
 
@@ -433,11 +440,15 @@ class Nikobot(commands.Bot):
             self.add_command(hush_command)
         self.image_replies = imagine.Images(image_settings.url, image_settings.chance) if image_settings else None
         self.lore_note = lore_note
-        self.lore_store: lore.LoreStore | None = None
-        self.lore_schedule: lore.Schedule | None = None
+        # One lore per server, each learned only from that server's channels
+        # and used only there (lore-<guild id>.json in the bot's volume).
+        self.lore_stores: dict[int, lore.LoreStore] = {}
+        self.lore_schedules: dict[int, lore.Schedule] = {}
         if lore_on:
-            self.lore_store = lore.LoreStore(DATA_DIR / "lore.json")
-            self.lore_schedule = lore.Schedule.for_store(self.lore_store)
+            for guild_id in sorted(allowed_guilds):
+                store = lore.LoreStore(DATA_DIR / f"lore-{guild_id}.json")
+                self.lore_stores[guild_id] = store
+                self.lore_schedules[guild_id] = lore.Schedule.for_store(store)
             self.add_command(lore_command)
             self.add_command(forget_command)
 
@@ -462,7 +473,7 @@ class Nikobot(commands.Bot):
                 self.stream_settings.client_id, self.stream_settings.client_secret, self.http_session
             )
             self.stream_watch.start()
-        if self.lore_store is not None:
+        if self.lore_stores:
             self.lore_watch.start()
 
     # --- go-live posts -----------------------------------------------------
@@ -525,10 +536,13 @@ class Nikobot(commands.Bot):
 
     @tasks.loop(minutes=lore.TICK_MINUTES)
     async def lore_watch(self) -> None:
-        try:
-            await lore.tick(self.lore_schedule, lore.local_now(), self.lore_idle, self.lore_update)
-        except Exception as exc:  # noqa: BLE001 - an exception would stop this loop for good
-            log.warning("lore: %s", type(exc).__name__)
+        for guild_id, schedule in self.lore_schedules.items():  # one server at a time
+            try:
+                await lore.tick(
+                    schedule, lore.local_now(), self.lore_idle, lambda gid=guild_id: self.lore_update(gid)
+                )
+            except Exception as exc:  # noqa: BLE001 - an exception would stop this loop for good
+                log.warning("lore: %s", type(exc).__name__)
 
     @lore_watch.before_loop
     async def before_lore_watch(self) -> None:
@@ -543,24 +557,29 @@ class Nikobot(commands.Bot):
         except Exception:  # noqa: BLE001 - unreachable counts as busy
             return False
 
-    def lore_channels(self) -> frozenset[int]:
-        """The channels lore may learn from, as Discord sees them right now."""
+    def lore_channels(self, guild_id: int) -> frozenset[int]:
+        """The channels of this one server that lore may learn from, as Discord sees them now."""
         ids = set()
         for guild in self.guilds:
-            if guild.id not in self.allowed_guilds:
+            if guild.id != guild_id or guild.id not in self.allowed_guilds:
                 continue
             for channel in [*guild.channels, *guild.threads]:
                 if lore_channel(channel, guild.default_role):
                     ids.add(channel.id)
         return frozenset(ids)
 
-    async def lore_update(self) -> str:
-        """Read the last day of chat and ask the model for the new lore (lore.update)."""
+    async def lore_update(self, guild_id: int) -> str:
+        """Read one server's last day of chat and ask the model for its new lore (lore.update).
+
+        Only that server's messages (guild filter) from its own channels (channel
+        filter): two separate fences, so nothing from another server gets in.
+        """
         now = lore.local_now()
         started = time.monotonic()
+        store = self.lore_stores[guild_id]
         chat = await asyncio.to_thread(
-            lore.read_chat, DATA_DIR, now, self.allowed_guilds, self.user.id,
-            self.lore_channels(), self.lore_store.read_since(), MESSAGE_LOG_FILES,
+            lore.read_chat, DATA_DIR, now, frozenset({guild_id}), self.user.id,
+            self.lore_channels(guild_id), store.read_since(), MESSAGE_LOG_FILES,
         )
         log.info(
             "lore: %d usable of %d message(s) in the last day, %d chars, read in %.1fs (left out: %s)",
@@ -576,13 +595,14 @@ class Nikobot(commands.Bot):
                 )
             return reply.text
 
-        return await lore.update(self.lore_store, chat, ask, now)
+        return await lore.update(store, chat, ask, now)
 
-    def lore_for(self, text: str | None = None) -> tuple[str, ...]:
-        """The lore for a prompt: none when it's off, or for a serious-looking ping."""
-        if self.lore_store is None or (text is not None and safety.is_serious([text])):
+    def lore_for(self, guild_id: int | None, text: str | None = None) -> tuple[str, ...]:
+        """This server's lore for a prompt: none when it's off, or for a serious-looking ping."""
+        store = self.lore_stores.get(guild_id) if guild_id is not None else None
+        if store is None or (text is not None and safety.is_serious([text])):
             return ()
-        return self.lore_store.current()
+        return store.current()
 
     async def close(self) -> None:
         await super().close()
@@ -616,8 +636,9 @@ class Nikobot(commands.Bot):
             )
         else:
             log.info("chime-ins off (%s)", self.chime_note)
-        if self.lore_store is not None:
-            log.info("lore on (%s)", self.lore_store.status())
+        if self.lore_stores:
+            for guild_id, store in self.lore_stores.items():
+                log.info("lore on in guild %s (%s)", guild_id, store.status())
         else:
             log.info("lore off (%s)", self.lore_note)
         for guild in self.guilds:
@@ -868,7 +889,7 @@ class Nikobot(commands.Bot):
                         lines,
                         serious_hint=safety.is_serious([trigger.text]),
                         voice=persona.pick_voice(random),
-                        lore=self.lore_for(trigger.text),  # none on a serious-looking ping
+                        lore=self.lore_for(message.guild.id, trigger.text),  # none on a serious-looking ping
                     )
                     text = await self.generate(prompt)
                 # A ping reply is filtered for slurs and prompt leaks, nothing
@@ -932,7 +953,7 @@ class Nikobot(commands.Bot):
         async with channel.typing():
             prompt = persona.build_chat_messages(
                 lines, direction=persona.CHIME_DIRECTION, voice=persona.pick_voice(random),
-                lore=self.lore_for(),
+                lore=self.lore_for(message.guild.id),
             )
             text = await self.generate(prompt, canned_errors=False)
             if not text:
