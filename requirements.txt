@@ -2,5 +2,6 @@
 # Exact pin: pip only re-resolves when this file changes, so a pin is also how a
 # rebuild picks up a fix. aiohttp (used for the Ollama calls) comes with it.
 discord.py==2.7.1
-# decodes images for the captioner (images.py); the wheel bundles its codecs
+# decodes images for the captioner (images.py) and shrinks generated ones to a
+# small WebP (imagine.py); the wheel bundles its codecs
 Pillow==13.0.0

@@ -12,6 +12,13 @@ Rules this file enforces (the owner's, 2026-11-18):
   rare chime-ins (chime.py, the owner's ask 2026-11-19), only in the servers
   in chime_guilds, at most one a day, censored by the full reply check, and
   silenced for a week by !hush.
+- A ping reply can come with a generated image (imagine.py, the owner's ask
+  2026-11-19): when the ping asks for a picture, or at image_chance otherwise.
+  "Mostly SFW except where it's funny", in every channel: the request and the
+  image prompt get the slur filter, and the prompt gets the leak check and an
+  image check (PG-13 crude humor yes; explicit sex or nudity, sexualized real
+  people, gore and hate no). One job at a time, a cooldown per person, an
+  hourly cap. Chime-ins stay text-only.
 - It shows no Discord status (the owner removed it, 2026-11-18).
 - Only in the owner's own servers (the guild IDs in secrets.py). It ignores
   every other server and leaves any new one it gets added to.
@@ -46,6 +53,7 @@ import persona
 import safety
 import chime
 import images
+import imagine
 import streams
 from llm import LLMError, LLMTimeout, Ollama
 
@@ -154,6 +162,28 @@ def focus(lines: list[persona.Line], is_reply: bool) -> list[persona.Line]:
         log.info("chat: the ping stands on its own; answering it without earlier messages")
         return [trigger]
     return lines
+
+
+@dataclass(frozen=True)
+class ImageConfig:
+    url: str
+    chance: float
+
+
+def image_config(secrets, url: str) -> tuple[ImageConfig | None, str]:
+    """Image replies: the imagegen URL (IMAGEGEN_URL) and image_chance from secrets.py."""
+    url = (url or "").strip()
+    if not url:
+        return None, "IMAGEGEN_URL is empty"
+    if not url.startswith(("http://", "https://")):
+        return None, "IMAGEGEN_URL isn't an http(s) URL"
+    try:
+        chance = float(getattr(secrets, "image_chance", imagine.DEFAULT_CHANCE))
+    except (TypeError, ValueError):
+        return None, "image_chance isn't a number"
+    if not 0 <= chance <= imagine.MAX_CHANCE:  # also rejects NaN
+        return None, f"image_chance must be from 0 to {imagine.MAX_CHANCE}"
+    return ImageConfig(url, chance), "ok"
 
 
 def context_without_serious(lines: list[persona.Line]) -> list[persona.Line]:
@@ -272,6 +302,7 @@ class Nikobot(commands.Bot):
         stream_note: str = "not configured",
         chime_settings: ChimeConfig | None = None,
         chime_note: str = "not configured",
+        image_settings: ImageConfig | None = None,
     ):
         intents = discord.Intents.default()
         intents.message_content = True  # privileged: enable it in the developer portal
@@ -309,6 +340,7 @@ class Nikobot(commands.Bot):
                 guilds=chime_settings.guilds,
             )
             self.add_command(hush_command)
+        self.image_replies = imagine.Images(image_settings.url, image_settings.chance) if image_settings else None
 
     async def setup_hook(self) -> None:
         self.http_session = aiohttp.ClientSession()
@@ -593,6 +625,21 @@ class Nikobot(commands.Bot):
         except discord.HTTPException as exc:
             log.warning("could not send message (HTTP %s)", exc.status)
 
+    async def send_image(self, channel, reply_to: discord.Message, text=None, fp=None, filename=None) -> bool:
+        """For imagine.py: an image file or a short line, as a reply that pings nobody."""
+        extra = {"file": discord.File(fp, filename=filename)} if fp is not None else {}
+        try:
+            await channel.send(
+                text,
+                reference=reply_to.to_reference(fail_if_not_exists=False),
+                allowed_mentions=discord.AllowedMentions.none(),
+                **extra,
+            )
+        except discord.HTTPException as exc:
+            log.warning("image: could not send (HTTP %s)", exc.status)
+            return False
+        return True
+
     async def chat(self, message: discord.Message) -> None:
         if not self.cooldown.allow(message.author.id, time.monotonic()):
             log.info("chat: same person pinged again within %ds; ignored", CHAT_COOLDOWN_S)
@@ -642,6 +689,8 @@ class Nikobot(commands.Bot):
         finally:
             self.waiting -= 1
         await self.send(message.channel, text, message)
+        if self.image_replies is not None:  # a picture, if asked for or by chance (imagine.py)
+            await self.image_replies.follow_up(self, message, lines, text)
 
     # --- unprompted chime-ins ---------------------------------------------
 
@@ -721,7 +770,12 @@ def main() -> None:
         raise SystemExit("no guild IDs in secrets.py (guild_permission/guild_permission2); refusing to start")
     settings, note = stream_config(secrets)
     chimes, chime_note = chime_config(secrets, allowed)
-    Nikobot(allowed, settings, note, chimes, chime_note).run(secrets.token, log_handler=None)
+    replies, replies_note = image_config(secrets, imagine.IMAGEGEN_URL)
+    if replies is not None:
+        log.info("image replies on: when asked, and %.0f%% of other ping replies", replies.chance * 100)
+    else:
+        log.info("image replies off (%s)", replies_note)
+    Nikobot(allowed, settings, note, chimes, chime_note, replies).run(secrets.token, log_handler=None)
 
 
 if __name__ == "__main__":
