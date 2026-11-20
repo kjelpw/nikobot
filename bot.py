@@ -19,6 +19,11 @@ Rules this file enforces (the owner's, 2026-11-18):
 - It logs every message it sees (DMs included) to /data/messages.log*, as
   JSON lines, rotated. It never logs to stdout, so chat text stays out of
   Loki/Grafana.
+- Pictures (the owner's ask, 2026-11-19): images and GIFs in a reply's
+  context are described by the small vision model (images.py) and become
+  "[image: ...]" in the chat line. Only when a reply or chime-in is being
+  built, only from Discord's own hosts, never stored, captions never logged,
+  and a failure or a slow caption only ever gives "[image]".
 """
 from __future__ import annotations
 
@@ -40,6 +45,7 @@ from discord.ext import commands, tasks
 import persona
 import safety
 import chime
+import images
 import streams
 from llm import LLMError, LLMTimeout, Ollama
 
@@ -47,6 +53,9 @@ log = logging.getLogger("nikobot")
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 MODEL = os.environ.get("NIKOBOT_MODEL", "").strip() or "local-chat:latest"
+# The vision model for image captions; "off" turns captions off ("[image]").
+# local-small is already loaded beside local-chat, so this adds no third model.
+CAPTION_MODEL = os.environ.get("NIKOBOT_CAPTION_MODEL", "").strip() or "local-small:latest"
 DATA_DIR = Path(os.environ.get("NIKOBOT_DATA_DIR", "/data"))
 # Deliberately outside the code directory: see main()
 SECRETS_PATH = Path(os.environ.get("NIKOBOT_SECRETS", "/app/secrets.py"))
@@ -61,6 +70,7 @@ STREAM_POLL_S = 60
 BLOCKLIST_SCAN = 15  # messages the serious-topic list checks before a chime-in
 HUSH_DAYS = 7
 MAX_CHIME_CHANCE = 0.25
+EMBED_WAIT_S = 1.5  # Discord adds a link's embed a moment after the message
 
 
 def guild_ids(*values) -> frozenset[int]:
@@ -274,6 +284,7 @@ class Nikobot(commands.Bot):
         self.waiting = 0
         self.http_session: aiohttp.ClientSession | None = None
         self.llm: Ollama | None = None
+        self.captioner: images.Captioner | None = None
         self.add_command(ip_command)
         self.chime_note = chime_note
         self.gate: chime.ChimeGate | None = None
@@ -289,6 +300,18 @@ class Nikobot(commands.Bot):
     async def setup_hook(self) -> None:
         self.http_session = aiohttp.ClientSession()
         self.llm = Ollama(OLLAMA_URL, MODEL, self.http_session)
+        if CAPTION_MODEL.lower() != "off":
+            vision = Ollama(OLLAMA_URL, CAPTION_MODEL, self.http_session)
+
+            async def describe(image_b64: str) -> str:
+                reply = await vision.describe(images.CAPTION_PROMPT, image_b64, images.CAPTION_TOKENS)
+                return reply.text
+
+            self.captioner = images.Captioner(
+                fetch=lambda urls: images.fetch_first(self.http_session, urls),
+                describe=describe,
+                ready=vision.model_loaded,
+            )
         if self.stream_settings is not None:
             self.stream_state = streams.StreamState(DATA_DIR / "stream_state.json")
             self.twitch = streams.Twitch(
@@ -366,6 +389,7 @@ class Nikobot(commands.Bot):
             len(self.allowed_guilds),
             "on" if self.message_log is not None else "OFF",
         )
+        log.info("image captions %s", f"on ({CAPTION_MODEL})" if self.captioner is not None else "off")
         if self.stream_settings is not None:
             channel = self.get_channel(self.stream_settings.channel_id)
             log.info(
@@ -451,24 +475,70 @@ class Nikobot(commands.Bot):
             replied_to,
         )
 
-    def to_line(self, message: discord.Message) -> persona.Line | None:
+    def to_line(
+        self, message: discord.Message, captions: dict[str, str | None] | None = None
+    ) -> persona.Line | None:
+        """A message as a chat line. Pictures become "[image: caption]" (or "[image]")."""
         if message.type not in CHAT_TYPES:
             return None
         names = {u.id: u.display_name for u in message.mentions}
         text = persona.clean_text(message.content, self.user.id, names)
-        if not text and (message.attachments or message.stickers):
-            text = "[sent an attachment]"
+        text = images.line_text(
+            text,
+            images.refs_in(message),
+            captions,
+            stickers=[s.name for s in message.stickers],
+            has_attachments=bool(message.attachments),
+        )
         if not text:
             return None
         return persona.Line(message.author.display_name, text, message.author.id == self.user.id)
 
-    async def recent_lines(self, channel, limit: int, before=None) -> list[persona.Line]:
+    def to_lines(self, messages, captions: dict[str, str | None] | None = None) -> list[persona.Line]:
+        return [line for m in messages if (line := self.to_line(m, captions)) is not None]
+
+    async def recent_messages(self, channel, limit: int, before=None) -> list[discord.Message]:
+        """The channel's last few messages, oldest first."""
         try:
             history = [m async for m in channel.history(limit=limit, before=before)]
         except discord.HTTPException:
             history = []
         history.reverse()
-        return [line for m in history if (line := self.to_line(m)) is not None]
+        return history
+
+    async def captions(self, messages, deadline: float) -> dict[str, str | None]:
+        """Captions for the pictures in these messages: the ones a reply's context shows.
+
+        Lazy (only called while a reply or chime-in is being built), never past
+        the deadline (time.monotonic()), and it never raises: whatever fails
+        is just "[image]".
+        """
+        if self.captioner is None:
+            return {}
+        groups = [refs for m in messages if m.type in CHAT_TYPES and (refs := images.refs_in(m))]
+        if not groups:
+            return {}
+        try:
+            return await self.captioner.captions_for(groups, deadline - time.monotonic())
+        except Exception as exc:  # noqa: BLE001 - a picture must never break a reply
+            log.warning("images: %s; using [image]", type(exc).__name__)
+            return {}
+
+    async def with_embeds(self, message: discord.Message) -> discord.Message:
+        """The message, with its link's image/GIF embed if Discord has added it by now.
+
+        Discord adds a link's embed a moment after the message is created, so
+        a ping that carries a Tenor link may not have it yet.
+        """
+        if self.captioner is None or message.embeds or not images.may_embed(message.content):
+            return message
+        await asyncio.sleep(EMBED_WAIT_S)
+        if message.embeds:  # discord.py updates the cached message in place
+            return message
+        try:
+            return await message.channel.fetch_message(message.id)
+        except discord.HTTPException:
+            return message
 
     async def generate(self, messages: list[dict], canned_errors: bool = True) -> str:
         """Run one reply. Errors become a canned in-character line, or "" if not canned."""
@@ -531,10 +601,16 @@ class Nikobot(commands.Bot):
                 # persona's "drop the parody, answer plainly" hint below.
                 # Context for the joke: recent messages, minus any that hit the
                 # serious-topic list, so it can't riff on someone's bad news.
-                history = await self.recent_lines(
-                    message.channel, persona.MAX_CONTEXT_MESSAGES - 1, before=message
+                # Pictures in it are captioned first (at most images.BUDGET_S),
+                # so a caption that hits the list keeps its line out too.
+                started = time.monotonic()
+                history, current = await asyncio.gather(
+                    self.recent_messages(message.channel, persona.MAX_CONTEXT_MESSAGES - 1, before=message),
+                    self.with_embeds(message),
                 )
-                lines = context_without_serious(history) + [trigger]
+                captions = await self.captions(history + [current], started + images.BUDGET_S)
+                trigger = self.to_line(current, captions) or trigger
+                lines = context_without_serious(self.to_lines(history, captions)) + [trigger]
                 prompt = persona.build_chat_messages(
                     lines, serious_hint=safety.is_serious([trigger.text])
                 )
@@ -567,7 +643,12 @@ class Nikobot(commands.Bot):
         lines: list[persona.Line] = []
 
         async def recent_texts() -> list[str]:
-            lines[:] = await self.recent_lines(channel, BLOCKLIST_SCAN)
+            history = await self.recent_messages(channel, BLOCKLIST_SCAN)
+            # captions only for what the model will see, the last few lines;
+            # the blocklist and the classifier then see them too
+            shown = [m for m in history if self.to_line(m) is not None][-persona.MAX_CONTEXT_MESSAGES:]
+            captions = await self.captions(shown, time.monotonic() + images.BUDGET_S)
+            lines[:] = self.to_lines(history, captions)
             return [line.text for line in lines]
 
         async def classify() -> bool:

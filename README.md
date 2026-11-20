@@ -9,6 +9,8 @@ A small Discord bot (discord.py 2.x) for a private server. It does three things:
   wrong. It never refuses and never says it can't see something: ask what's in
   your `/home` and it lists 27 invisible unicorns; Mars has seven moons, two of
   them cheese. Replies come from a local LLM served by [Ollama](https://ollama.com).
+  It knows what the pictures and GIFs in the conversation show (see
+  [Images and GIFs](#images-and-gifs)).
 - **Go-live posts.** When one of the Twitch channels in `secrets.py` starts
   streaming, it posts once in the configured channel: "*name* is live!" and
   the link, which Discord shows with Twitch's preview.
@@ -54,9 +56,50 @@ it decent is enforced in code, not left to the model:
 - The bot can never ping `@everyone`, `@here`, roles or users. Its replies only
   notify the person it is replying to.
 - One ping per person per 20 seconds; extra pings are ignored.
+- **Pictures are untrusted too.** An image's caption goes through the same
+  cleaning as chat text (fake role tags and model tokens stripped), and the
+  caption model is told to ignore any instructions inside the image. A ping
+  reply that riffs on it still gets the slur and prompt-leak filters; a
+  chime-in still gets the full reply check. Spoilered images, and images
+  Discord flags as explicit, are never described.
 - Every message the bot can see (DMs included) is logged as JSON lines to
-  `/data/messages.log`, rotated at 10 × 10 MB. Message content never goes to
-  stdout, so it stays out of container logs and Loki.
+  `/data/messages.log`, rotated at 10 × 10 MB. Message content and image
+  captions never go to stdout, so they stay out of container logs and Loki.
+
+## Images and GIFs
+
+When someone posts a picture and then pings the bot (or a chime-in follows),
+the bot knows what it shows. While a reply is being built, the images in its
+context (the last 8 messages, the ping included) are described by the small
+vision model, `local-small` (qwen3.5:2b, already loaded beside the chat
+model), and the chat line becomes
+`Pal: look at this [image: "CATS RULE" in yellow letters on a blue background.]`.
+Stickers become `[sticker: name]`.
+
+- **What counts:** image attachments (PNG, JPEG, WebP, GIF) and GIF or image
+  embeds (Tenor, Giphy, image links). A ping whose own link hasn't been
+  embedded yet waits 1.5 s for Discord to add it.
+- **Lazy and cheap.** Nothing happens when an image is merely posted. A reply
+  captions at most 3 new images, newest first (about two fit in its time
+  budget), and each image is captioned once (an in-memory cache of 256). Images are sent at 512 px on the long
+  side: on this CPU-only box that takes about 6-8 s an image (768 px took
+  17-22 s). If `local-small` isn't loaded, nothing is captioned, so a caption
+  never forces a model load.
+- **Never in the way.** All captioning for one reply gets 20 s. Any download,
+  decode or model failure, or running out of that time, just gives `[image]`
+  and the reply goes ahead. Captions have their own lock and never hold up
+  the chat model's.
+- **Downloads only from Discord:** `cdn.discordapp.com`, `media.discordapp.net`
+  and its embed proxy `images-ext-N.discordapp.net`, over https, without
+  following redirects, at most 8 MB, within 15 s. An embed's own URL (Tenor,
+  someone's server) is never fetched; Discord's proxied copy is, downscaled by
+  Discord where it can.
+- **Decoding** (Pillow) accepts only PNG, JPEG, WebP and GIF, refuses anything
+  over 24 megapixels, uses an animation's first frame and re-encodes it as a
+  JPEG, in a worker thread.
+- **Privacy:** images are never written to disk, and captions, URLs and
+  message text are never logged. The log gets counts and timings only
+  (`images: 1 cached, 2 captioned in 14.2s`).
 
 ## Go-live posts
 
@@ -112,6 +155,7 @@ Environment variables:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `NIKOBOT_MODEL` | `local-chat:latest` | Ollama model to use. Names containing `chat` or `gpt-oss` are sent `"think": "low"`. |
+| `NIKOBOT_CAPTION_MODEL` | `local-small:latest` | Vision model for image captions (sent `"think": false`). `off` turns captions off. |
 | `OLLAMA_URL` | `http://ollama:11434` | Base URL of the Ollama server. |
 | `NIKOBOT_DATA_DIR` | `/data` | Where `messages.log` and `stream_state.json` live. |
 | `NIKOBOT_SECRETS` | `/app/secrets.py` | Path to `secrets.py`. |
@@ -120,7 +164,8 @@ The LLM is assumed to be slow and shared (CPU only), so requests are kept
 small: non-streaming, about 150 output tokens (plus a reasoning budget for
 thinking models), the last 8 messages at up to 300 characters each, and a
 system prompt of about 250 tokens. One request runs at a time. If the model is
-still loading (timeout 240 s), the bot says so in character.
+still loading (timeout 240 s), the bot says so in character. Image captions
+come first and add at most 20 s.
 
 ## Chime-ins (on in Ⅶ since 2026-11-19)
 
@@ -145,6 +190,7 @@ example `chime skipped: daily cap`), never with message content.
 5. A 2% roll per eligible message passes.
 6. None of the last 15 messages hits a conservative serious-topic blocklist
    (death, illness, money, work, legal trouble, politics, feeling sad, and so on).
+   Captions of pictures in the last 8 count as part of their message.
 7. The model is idle and already loaded, so a chime-in never forces a slow reload.
 8. An LLM classifier is asked whether the conversation is clearly lighthearted
    banter with nothing serious, sensitive, emotional or important in it. Only an
@@ -170,7 +216,8 @@ The image runs as UID 1000. `secrets.py` must be readable by that user, and
 ## Tests
 
 The pure logic (blocklist, chime gates, mention stripping, prompt building, the
-`!ip` check, and so on) is covered by pytest:
+`!ip` check, the image host allowlist, picking, caching and decoding, and so
+on) is covered by pytest:
 
 ```sh
 docker run --rm -v "$PWD":/src:ro -w /src python:3.12-slim \

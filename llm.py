@@ -13,6 +13,8 @@ import aiohttp
 TIMEOUT_SECONDS = 240  # a cold model can take minutes to load
 REPLY_TOKENS = 150
 CLASSIFY_TOKENS = 4
+# image captions: the caller's time budget (images.BUDGET_S) usually ends it first
+DESCRIBE_TIMEOUT_SECONDS = 30
 # gpt-oss spends part of num_predict on its reasoning, even at think=low
 THINK_BUDGET = 350
 
@@ -50,6 +52,18 @@ def build_payload(model: str, messages: list[dict], num_predict: int, temperatur
     return payload
 
 
+def build_image_payload(model: str, prompt: str, image_b64: str, num_predict: int) -> dict:
+    """One image and a question about it, for a vision model (local-small)."""
+    return {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt, "images": [image_b64]}],
+        "stream": False,
+        # qwen3.5 thinks by default, and is very slow when it does
+        "think": False,
+        "options": {"num_predict": num_predict, "temperature": 0.2},
+    }
+
+
 def model_tag(model: str) -> str:
     return model if ":" in model else model + ":latest"
 
@@ -63,12 +77,19 @@ class Ollama:
     async def chat(
         self, messages: list[dict], num_predict: int = REPLY_TOKENS, temperature: float = 0.9
     ) -> Reply:
-        payload = build_payload(self.model, messages, num_predict, temperature)
+        return await self._post(build_payload(self.model, messages, num_predict, temperature))
+
+    async def describe(self, prompt: str, image_b64: str, num_predict: int) -> Reply:
+        """What a (base64 JPEG) image shows, from a vision model."""
+        payload = build_image_payload(self.model, prompt, image_b64, num_predict)
+        return await self._post(payload, DESCRIBE_TIMEOUT_SECONDS)
+
+    async def _post(self, payload: dict, timeout: float = TIMEOUT_SECONDS) -> Reply:
         try:
             async with self.session.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=TIMEOUT_SECONDS),
+                timeout=aiohttp.ClientTimeout(total=timeout),
             ) as resp:
                 if resp.status != 200:
                     raise LLMError(f"HTTP {resp.status}")
