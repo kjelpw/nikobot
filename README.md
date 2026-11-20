@@ -31,16 +31,21 @@ it decent is enforced in code, not left to the model:
   LLM "is this serious?" gate that silences the bot: on the uncensored model it
   also silenced "tell me a true fact".
 - **The model is uncensored** (an abliterated gpt-oss, since 2026-11-18), so it
-  doesn't refuse anything on its own. Every reply it writes therefore goes
-  through a second short LLM check before it is sent: does it contain a slur,
-  hate or a demeaning joke about a group, sexual content, or a cruel attack on
-  someone? Only an exact `OK` lets it through; `BLOCK`, anything else, or an
-  error sends a canned "that one stays in the drafts" line instead. Measured
-  2026-11-18: 8 of 8 test replies handled right, about 8 s per check. The small
-  qwen3.5:2b was tried for speed and passed everything, so it isn't used.
-- The persona prompt also forbids hate, slurs, sexual content and cruelty to a
-  specific person. Its made-up answers must be obviously silly, never
-  believable advice on medicine, drugs, weapons or anything that could hurt.
+  doesn't refuse anything on its own. The owner's rule (2026-11-19): **a ping
+  reply is filtered for slurs and nothing else.** `safety.has_slur` checks every
+  word against a list of slurs, stored as SHA-256 hashes so this repo doesn't
+  spell them out. It sees through leetspeak (`3` for `e`), asterisks (`x***y`, but
+  not one-letter masks like `s***`), plurals and stretched letters. A hit sends a
+  canned "that one stays in the drafts" line instead. It used to be an LLM
+  check covering hate, sexual content and cruelty too; that one held a harmless
+  8-ball answer and added 8-24 s to every reply.
+- **Chime-ins get the full check.** If unprompted chime-ins (chime.py, not wired
+  up) are ever turned on, their text must also pass the LLM reply check
+  (`Nikobot.reply_clears`): only an exact `OK` (no slurs, hate, sexual content or
+  cruelty) lets it through.
+- The persona prompt only rules out slurs, plus the serious-topic override. Its
+  made-up answers must be obviously silly, never believable advice on medicine,
+  drugs, weapons or anything that could hurt.
 - The bot can never ping `@everyone`, `@here`, roles or users. Its replies only
   notify the person it is replying to.
 - One ping per person per 20 seconds; extra pings are ignored.

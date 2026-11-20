@@ -125,12 +125,16 @@ def test_go_live_posts_are_a_template_never_model_text():
     assert "self.llm" not in src and "generate" not in src
 
 
-def test_every_model_reply_goes_through_the_reply_check():
+def test_a_ping_reply_is_filtered_for_slurs_only():
     import inspect
 
     import persona
 
+    # the owner's rule (2026-11-19): pings get the slur filter and nothing else
     src = inspect.getsource(bot.Nikobot.chat)
-    assert "self.reply_clears(text)" in src and "persona.HELD_LINES" in src
+    assert "safety.has_slur(text)" in src and "persona.HELD_LINES" in src
+    assert "reply_clears" not in src and "build_reply_check_messages" not in src
+    # the full check is kept for chime-ins
+    assert "build_reply_check_messages" in inspect.getsource(bot.Nikobot.reply_clears)
     # canned lines skip the check; held lines are canned, so no loop
     assert set(persona.HELD_LINES) <= persona.CANNED_LINES

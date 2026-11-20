@@ -3,6 +3,10 @@
 Order is cheapest first: allowlist, hush, daily cap, banter, dice, then (only
 for the rare survivor) the blocklist on recent messages, a check that the model
 is already loaded, and finally the LLM classifier.
+
+The owner's rule (2026-11-19): chime-ins are censored. Whatever text a chime-in
+would post must pass both safety.has_slur and the full LLM reply check
+(Nikobot.reply_clears) first. Ping replies only get the slur filter.
 """
 from __future__ import annotations
 
