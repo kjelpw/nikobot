@@ -19,11 +19,11 @@ Apart from go-live posts and rare, censored chime-ins (see "Chime-ins"
 below), it never speaks unprompted:
 only an @mention, a reply to it, or `!ip` gets a response.
 
-A reply answers the ping itself. Earlier messages are background: a short
-model check asks whether the ping needs them, and if it stands on its own
-("what's 17 times 4?") it's answered without them, so an earlier topic can't
-take over. A reply to a message, a ping of three words or fewer, or any doubt
-keeps the context. It works only in the two servers named in
+A reply answers the ping itself. Earlier messages are background: if the ping
+stands on its own ("what's 17 times 4?") it's answered without them, so an
+earlier topic can't take over. A plain word check decides, with no model call:
+a reply to a message, a ping of three words or fewer, or any word that points
+back (this, that, him, again, same, settle, what about, ...) keeps the context. It works only in the two servers named in
 `secrets.py`, leaves any other server it is added to, and ignores DMs entirely
 (no reply, nothing sent to the model).
 

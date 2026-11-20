@@ -170,9 +170,17 @@ def test_a_ping_reply_is_filtered_for_slurs_and_leaks_only():
 def test_a_ping_that_stands_alone_drops_the_earlier_messages():
     import inspect
 
+    import persona
+
     src = inspect.getsource(bot.Nikobot.chat)
-    assert "self.focus(lines, is_reply=message.reference is not None)" in src
-    assert src.index("self.focus(") < src.index("persona.build_chat_messages(")
-    focus = inspect.getsource(bot.Nikobot.focus)
-    assert "persona.stands_alone(answer)" in focus and "return [trigger]" in focus
-    assert "keeping the context" in focus  # errors keep the old behaviour
+    assert "focus(lines, is_reply=message.reference is not None)" in src
+    assert src.index("focus(lines") < src.index("persona.build_chat_messages(")
+    # no model call: the owner ruled out a slowdown
+    assert "self.llm" not in inspect.getsource(bot.focus)
+    hist = [persona.Line("A", "happy birthday Ed!"), persona.Line("Niko", "Happy birthday!", is_self=True)]
+    ping = persona.Line("B", "what's the best way to cook rice?")
+    assert bot.focus(hist + [ping], is_reply=False) == [ping]
+    assert bot.focus(hist + [ping], is_reply=True) == hist + [ping]
+    follow = persona.Line("B", "do that again in pirate speak")
+    assert bot.focus(hist + [follow], is_reply=False) == hist + [follow]
+    assert bot.focus([ping], is_reply=False) == [ping]
