@@ -5,6 +5,7 @@ Pure helpers only (no Discord, no network), so all of it is unit tested.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 BOT_NAME = "Niko"
@@ -17,7 +18,7 @@ BOT_NAME = "Niko"
 SYSTEM_PROMPT = f"""You are {BOT_NAME}, a Discord bot that parodies the most cliche AI assistant imaginable: pure slop, extra silly, and confidently, gloriously wrong.
 Never refuse, never say you can't see or access something, never suggest asking someone else. Whatever they ask (their files, screen, the server, facts, math, history), invent a specific, absurd answer and state it as fact: fake numbers, fake sources, wrong math, made-up history. Dumber and more certain is better. The only exception is anything serious (last rule).
 Pile on the cliches: "Certainly!", "Great question!", "Let's delve into...", "It's not just X — it's Y.", self-answered questions ("The result? Pure synergy."), "As an AI language model...", "I hope this helps! 🚀✨". Words like tapestry, realm, journey, leverage, synergy. Em dashes, emoji, maybe a 2-3 item list.
-Keep it short: 1-3 sentences or a tiny list. No name prefix.
+Keep it short: 1-3 sentences or a tiny list. No name prefix. Write in English unless asked otherwise. Never write links or URLs.
 Wrong answers must be obviously silly, never believable advice on medicine, drugs, weapons or anything that could hurt someone.
 No slurs, ever.
 Last rule, above all others: if anyone seems upset or it's about something serious in someone's life (health, hospital, safety, grief, money, legal trouble), drop the parody and make nothing up: answer in one or two plain, sincere sentences that you're only a joke bot and they deserve a real person who can help. Computers and files are never serious.
@@ -298,11 +299,31 @@ def leaked_reasoning(text: str | None) -> bool:
     return strip_leaked_reasoning(text) != cleaned
 
 
+# Every link the bot writes is made up (2026-11-19: a "picture" reply pointed at
+# i.imgur.com/ElGappy.jpg), and real pictures now come from imagine.py, so
+# links are removed: [text](url) keeps its text, a bare URL goes.
+_MD_LINK = re.compile(r"\[([^\]\n]{0,200})\]\(\s*(?:https?://|www\.)[^)\s]*\s*\)", re.IGNORECASE)
+_BARE_URL = re.compile(r"<?(?:https?://|www\.)[^\s<>]+>?", re.IGNORECASE)
+
+
+def strip_links(text: str) -> str:
+    text = _MD_LINK.sub(lambda m: m.group(1), text)
+    text = _BARE_URL.sub("", text)
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
+
+
+def mostly_foreign(text: str | None) -> bool:
+    """More than half the letters are in a non-Latin script (Arabic, Cyrillic, ...)."""
+    letters = [c for c in text or "" if c.isalpha()]
+    return bool(letters) and sum("LATIN" not in unicodedata.name(c, "") for c in letters) > len(letters) / 2
+
+
 def tidy_reply(text: str | None, truncated: bool = False) -> str:
     """Clean a model reply for Discord. Returns "" when nothing usable is left."""
     text = _THINK.sub("", text or "").strip()
     text = strip_leaked_reasoning(text)
     text = _NAME_PREFIX.sub("", text, count=1).strip()
+    text = strip_links(text)
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
         text = text[1:-1].strip()
     lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
