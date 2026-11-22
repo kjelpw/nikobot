@@ -6,13 +6,16 @@ A small Discord bot (discord.py 2.x) for a private server. It does three things:
   the two servers named in `secrets.py`, and never in DMs.
 - **Chat.** @mention the bot, or reply to one of its messages, and it answers as
   a goofy little gremlin that is confidently, gloriously wrong. Each reply picks
-  one of two voices: about two thirds of the time a deadpan, rude, lowercase
-  one-liner ("maybe every other tuesday, if not thursday"), otherwise an
-  over-the-top parody of AI-assistant "slop" ("Certainly! Mars has seven moons,
-  two of them cheese ✨"). It never refuses and never says it can't see
-  something. Replies come from a local LLM served by [Ollama](https://ollama.com).
-  The model sometimes glues its own planning onto a reply ("We used gremlin
-  voice."); that is cut off before posting.
+  one of two voices: nine times in ten a deadpan, rude, random lowercase
+  one-liner ("maybe every other tuesday, if not thursday"), otherwise a
+  one-sentence parody of AI-assistant "slop" ("Certainly! Mars has seven moons,
+  two of them cheese ✨"). Short wins, so each voice also has a hard length cap
+  (2 lines; 140 chars for gremlin, 200 for slop), except when a ping looks
+  serious. It never refuses and never says it can't see something. Replies come
+  from a local LLM served by [Ollama](https://ollama.com). The model sometimes
+  glues its own planning onto a reply ("We used gremlin voice.", "Need gremlin
+  voice: 1-6 words") or labels it ("gremlin: ..."); that is cut off before
+  posting.
   It knows what the pictures and GIFs in the conversation show (see
   [Images and GIFs](#images-and-gifs)).
   Ask it for a picture and it paints one, and now and then it adds one unasked

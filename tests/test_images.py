@@ -680,7 +680,7 @@ def test_ping_and_chime_still_go_through_their_filters():
     import inspect
 
     chat = inspect.getsource(bot.Nikobot.chat)
-    assert chat.index("self.captions(") < chat.index("self.generate(prompt)")
+    assert chat.index("self.captions(") < chat.index("self.generate(prompt")
     assert "safety.has_slur(text)" in chat and "safety.echoes_prompt(text, persona.prompt_texts())" in chat
     assert chat.index("safety.is_crisis(trigger.text)") < chat.index("self.captions(")
     chime = inspect.getsource(bot.Nikobot.maybe_chime)

@@ -126,7 +126,9 @@ def test_a_ping_is_never_silenced_by_a_serious_check():
     src = inspect.getsource(bot.Nikobot.chat)
     assert "serious_check" not in src and "staying silent" not in src
     assert "safety.CRISIS_LINE" in src  # crisis language still gets the support line
-    assert "serious_hint=safety.is_serious" in src  # and serious pings a plain answer
+    # and serious pings a plain answer, with the full reply length
+    assert "safety.is_serious([trigger.text])" in src and "serious_hint=serious" in src
+    assert "persona.reply_caps(voice, serious)" in src
 
 
 # --- go-live posts: the one unprompted message -------------------------------------

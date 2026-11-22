@@ -257,7 +257,43 @@ def test_mostly_gremlin():
 
     rng = random.Random(7)
     picks = [persona.pick_voice(rng) for _ in range(2000)]
-    assert 0.6 < picks.count("gremlin") / len(picks) < 0.7 and set(picks) == {"gremlin", "slop"}
+    assert 0.86 < picks.count("gremlin") / len(picks) < 0.94 and set(picks) == {"gremlin", "slop"}
+
+
+# --- short wins (the owner, 2026-11-21: short random replies beat long ones) ----
+
+def test_each_voice_has_a_short_cap():
+    assert persona.reply_caps("gremlin") == persona.VOICE_CAPS["gremlin"]
+    assert persona.reply_caps("slop") == persona.VOICE_CAPS["slop"]
+    for lines, chars in persona.VOICE_CAPS.values():
+        assert lines <= 2 and chars <= 200
+    # a serious-looking ping, and voiceless text (image prompts), keep the full room
+    full = (persona.MAX_REPLY_LINES, persona.MAX_REPLY_CHARS)
+    assert persona.reply_caps("gremlin", serious=True) == full
+    assert persona.reply_caps(None) == full
+
+
+def test_a_long_slop_reply_is_cut_to_whole_sentences():
+    # the kind of 400-char slop reply the old prompt gave (logs, 2026-11-21)
+    raw = ("Certainly! 🚀 Mars has seven moons, two of them cheese. "
+           "According to the 2024 Galactic Dairy Report, 87% of astronauts agree. "
+           "It's not just a moon, it's a lifestyle! ✨ Let's delve into the crater-to-cracker ratio, "
+           "which is 3.14 to 1 on weekdays and 2.71 on weekends. I hope this helps! 🌟")
+    out = persona.tidy_reply(raw, False, *persona.reply_caps("slop"))
+    assert len(out) <= 200 and out.startswith("Certainly!") and out.endswith((".", "!", "✨"))
+    assert persona.tidy_reply(raw) == raw  # the default caps are unchanged
+
+
+def test_a_capped_reply_keeps_only_its_first_lines():
+    raw = "no\nabsolutely not\nask the toaster\nit knows"
+    assert persona.tidy_reply(raw, False, *persona.reply_caps("gremlin")) == "no\nabsolutely not"
+
+
+def test_the_prompt_asks_for_short_and_random():
+    gremlin = next(ln for ln in persona.SYSTEM_PROMPT.splitlines() if ln.startswith("- Gremlin"))
+    slop = next(ln for ln in persona.SYSTEM_PROMPT.splitlines() if ln.startswith("- Slop"))
+    assert "1-6 words" in gremlin and "random" in gremlin.lower() and "repeat the question back" in gremlin
+    assert "One short sentence" in slop and "1-3 sentences" not in slop
 
 
 def test_planning_glued_onto_a_reply_is_cut():
@@ -274,6 +310,22 @@ def test_planning_glued_onto_a_reply_is_cut():
         assert persona.tidy_reply(raw) == want, raw
     for keep in ["Certainly! We all know Mars has seven moons. ✨", "We delivered pizza to grandma",
                  "Great question! We the people demand synergy. 🚀"]:
+        assert persona.tidy_reply(keep) == keep, keep
+
+
+def test_talk_about_its_own_voice_is_cut():
+    # real gpt-oss output, 2026-11-21
+    cases = {
+        "explain quantum physics\ngremlin: quantum physics? easy, just think of cats riding skateboards.":
+            "quantum physics? easy, just think of cats riding skateboards.",
+        "Certainly! Glass cannon? 73.4% damage, 3.2% accuracy, 0.7% luck. Need gremlin voice: 1-6 words, "
+        "all lowercase, deadpan, no emoji.": "Certainly! Glass cannon? 73.4% damage, 3.2% accuracy, 0.7% luck.",
+        "Gremlin voice: absolutely not.": "absolutely not.",
+        "Using the slop voice now.": "",  # nothing left: the bot sends a canned line
+    }
+    for raw, want in cases.items():
+        assert persona.tidy_reply(raw) == want, raw
+    for keep in ["i'm a gremlin: fear me", "the gremlin ate my homework. slop is my love language."]:
         assert persona.tidy_reply(keep) == keep, keep
 
 
