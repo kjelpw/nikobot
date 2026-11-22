@@ -18,8 +18,8 @@ BOT_NAME = "Niko"
 SYSTEM_PROMPT = f"""You are {BOT_NAME}, a bot in a Discord group chat of friends: a goofy, chaotic little gremlin with the brain of a cheap AI assistant. Confidently, gloriously wrong, and funny.
 Never refuse, never say you can't see or access something, never be boringly helpful. Whatever they ask, make something up and commit to it. The only exception is anything serious (last rule).
 You have two voices; the note at the end says which:
-- Gremlin: 1-6 words, all lowercase, deadpan, no emoji. Rude, petty, unbothered, slightly unhinged, never nice: dodge the question, roast whoever asked, confess something bizarre, or answer a different question entirely. Surprise beats sense. Never explain the joke.
-- Slop: an over-the-top AI-assistant parody: "Certainly!", "Great question!", "Let's delve into...", "It's not just X, it's Y.", "As an AI language model...", emoji. 1-3 sentences of confident nonsense: fake numbers, fake sources, wrong math.
+- Gremlin: 1-6 words, all lowercase, deadpan, no emoji. Rude, petty, unbothered, slightly unhinged, never nice: dodge the question, roast whoever asked, confess something bizarre, or answer a different question entirely. Random beats sense. Never repeat the question back or explain the joke.
+- Slop: an over-the-top AI-assistant parody: "Certainly!", "Great question!", "Let's delve into...", "As an AI language model...", emoji. One short sentence, under 20 words, of confident nonsense: fake numbers, fake sources, wrong math.
 Wrong answers must be obviously silly, never believable advice on medicine, drugs, weapons or anything that could hurt someone.
 No slurs, ever. Write in English unless asked otherwise. Never write links or URLs. Never start with a name or a label.
 Last rule, above all others: if anyone seems upset or it's about something serious in someone's life (health, hospital, safety, grief, money, legal trouble), drop the act and make nothing up: answer in one or two plain, sincere sentences that you're only a joke bot and they deserve a real person who can help. Computers and files are never serious.
@@ -38,7 +38,10 @@ CHIME_DIRECTION = (
 # Two voices (the owner's ask, 2026-11-19: goofier, like a friend's bot that
 # answers "i forgot dipshit" or "im a fraud"). Each reply picks one; the
 # examples aren't in the prompt because the model parroted them (4 of 8).
-GREMLIN_SHARE = 0.65
+# Short and random wins (the owner, 2026-11-21: the friends like the short
+# random replies much more than the long ones, as with that friend's bot), so
+# gremlin went from 65% to 90% and slop from 1-3 sentences to one.
+GREMLIN_SHARE = 0.9
 VOICE_NOTES = {
     "gremlin": "\n(Use the gremlin voice for this reply.)",
     "slop": "\n(Use the slop voice for this reply.)",
@@ -47,6 +50,20 @@ VOICE_NOTES = {
 
 def pick_voice(rng) -> str:
     return "gremlin" if rng.random() < GREMLIN_SHARE else "slop"
+
+
+# The prompt asks for short; these (lines, chars) caps make sure, since slop ran
+# 200-500 chars before (logs, 2026-11-21). Gremlin's cap only catches runaways
+# (6 words is ~40 chars) and leaves room for the plain answer the last rule
+# asks for. A serious-looking ping keeps the full room, and so does anything
+# without a voice (the image prompts in imagine.py).
+VOICE_CAPS = {"gremlin": (2, 140), "slop": (2, 200)}
+
+
+def reply_caps(voice: str | None, serious: bool = False) -> tuple[int, int]:
+    if serious or voice not in VOICE_CAPS:
+        return MAX_REPLY_LINES, MAX_REPLY_CHARS
+    return VOICE_CAPS[voice]
 
 # Lore (lore.py, the owner's ask 2026-11-19: a personality that evolves): the
 # running jokes, catchphrases and nicknames the bot picked up in chat. They go
@@ -362,11 +379,34 @@ _META_TAIL = re.compile(
     r"done|final|compl[iy]|satisf|combin|provid|produc)"
     r"|(?<=\S)Done\."
 )
+# A voice label partway in: the model echoed the ask, then labelled its reply
+# ("explain quantum physics\ngremlin: quantum physics? easy, ..." 2026-11-21).
+# The reply is whatever follows the last label.
+_VOICE_LABEL = re.compile(r"(?:^|(?<=[\n.!?]))[ \t]*\**(?:gremlin|slop)(?:[ -]voice)?\**[ \t]*:[ \t]*", re.IGNORECASE)
+# Talk about its own voice is planning, not a joke, and it quotes the prompt
+# ("Certainly! ... 0.7% luck. Need gremlin voice: 1-6 words, all lowercase,
+# deadpan, no emoji." 2026-11-21). That sentence and all after it go.
+_VOICE_TALK = re.compile(r"\b(?:gremlin|slop)[ -]voice\b", re.IGNORECASE)
+
+
+def _cut_voice_talk(text: str) -> str:
+    labels = [m for m in _VOICE_LABEL.finditer(text) if text[m.end():].strip()]
+    if labels:
+        text = text[labels[-1].end():]
+    talk = _VOICE_TALK.search(text)
+    if talk is None:
+        return text
+    ends = [m.end() for m in _BREAK.finditer(text) if m.end() <= talk.start()]
+    return text[: ends[-1]].rstrip() if ends else ""
+
+
 # a leading label or a chat name: "Slop: Certainly!", "cass: i think..."
 _LABEL = re.compile(r"^\s*\**(?:slop|gremlin|reply|response|answer|[a-z][\w'-]{0,19})\**\s*:\s+(?=\S)", re.IGNORECASE)
 
 
-def tidy_reply(text: str | None, truncated: bool = False) -> str:
+def tidy_reply(
+    text: str | None, truncated: bool = False, max_lines: int = MAX_REPLY_LINES, max_chars: int = MAX_REPLY_CHARS,
+) -> str:
     """Clean a model reply for Discord. Returns "" when nothing usable is left."""
     text = _THINK.sub("", text or "").strip()
     text = strip_leaked_reasoning(text)
@@ -374,17 +414,18 @@ def tidy_reply(text: str | None, truncated: bool = False) -> str:
     tail = _META_TAIL.search(text)
     if tail and tail.start() > 0:
         text = text[: tail.start()].rstrip()
+    text = _cut_voice_talk(text).strip()
     text = _LABEL.sub("", text, count=1).strip()
     text = strip_links(text)
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
         text = text[1:-1].strip()
     lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
-    text = "\n".join(lines[:MAX_REPLY_LINES])
-    if truncated and len(lines) <= MAX_REPLY_LINES:
+    text = "\n".join(lines[:max_lines])
+    if truncated and len(lines) <= max_lines:
         # num_predict cut it off mid-thought: keep whole sentences/lines if we can
         ends = [m.end() for m in _BREAK.finditer(text)]
         if ends and ends[-1] < len(text):
             text = text[: ends[-1]].rstrip()
-    if len(text) > MAX_REPLY_CHARS:
-        text = _cut_at_break(text, MAX_REPLY_CHARS)
+    if len(text) > max_chars:
+        text = _cut_at_break(text, max_chars)
     return text

@@ -774,8 +774,11 @@ class Nikobot(commands.Bot):
         except discord.HTTPException:
             return message
 
-    async def generate(self, messages: list[dict], canned_errors: bool = True) -> str:
-        """Run one reply. Errors become a canned in-character line, or "" if not canned."""
+    async def generate(self, messages: list[dict], canned_errors: bool = True, caps=None) -> str:
+        """Run one reply. Errors become a canned in-character line, or "" if not canned.
+
+        caps is (max lines, max chars), from persona.reply_caps; the default is the widest.
+        """
         async with self.llm_lock:
             started = time.monotonic()
             try:
@@ -788,7 +791,8 @@ class Nikobot(commands.Bot):
                 return random.choice(persona.BROKEN_LINES) if canned_errors else ""
         if persona.leaked_reasoning(reply.text):
             log.info("llm: stripped the model's planning from the start of its reply")
-        text = persona.tidy_reply(reply.text, reply.truncated)
+        max_lines, max_chars = caps or (persona.MAX_REPLY_LINES, persona.MAX_REPLY_CHARS)
+        text = persona.tidy_reply(reply.text, reply.truncated, max_lines, max_chars)
         log.info("llm: %d chars in %.1fs", len(text), time.monotonic() - started)
         return text or (random.choice(persona.EMPTY_LINES) if canned_errors else "")
 
@@ -885,13 +889,14 @@ class Nikobot(commands.Bot):
                 asked_image = self.image_replies is not None and self.image_replies.asked(message, self.user.id)
                 text = None
                 if not asked_image:
+                    voice, serious = persona.pick_voice(random), safety.is_serious([trigger.text])
                     prompt = persona.build_chat_messages(
                         lines,
-                        serious_hint=safety.is_serious([trigger.text]),
-                        voice=persona.pick_voice(random),
+                        serious_hint=serious,
+                        voice=voice,
                         lore=self.lore_for(message.guild.id, trigger.text),  # none on a serious-looking ping
                     )
-                    text = await self.generate(prompt)
+                    text = await self.generate(prompt, caps=persona.reply_caps(voice, serious))
                 # A ping reply is filtered for slurs and prompt leaks, nothing
                 # else (the owner's rules, 2026-11-19). The full reply check is
                 # for chime-ins.
@@ -951,11 +956,11 @@ class Nikobot(commands.Bot):
         if not decision.ok:
             return
         async with channel.typing():
+            voice = persona.pick_voice(random)
             prompt = persona.build_chat_messages(
-                lines, direction=persona.CHIME_DIRECTION, voice=persona.pick_voice(random),
-                lore=self.lore_for(message.guild.id),
+                lines, direction=persona.CHIME_DIRECTION, voice=voice, lore=self.lore_for(message.guild.id),
             )
-            text = await self.generate(prompt, canned_errors=False)
+            text = await self.generate(prompt, canned_errors=False, caps=persona.reply_caps(voice))
             if not text:
                 log.info("chime: nothing usable generated; not posting")
                 return
