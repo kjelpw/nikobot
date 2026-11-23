@@ -727,6 +727,63 @@ def test_records_from_another_server_never_reach_the_model():
     assert lore.select_chat(recs, frozenset({HOME}), bot_id=99, channels=frozenset()).entries == []
 
 
+# --- NSFW channels, per server (the owner, 2026-11-23: "nsfw channels in VII are ok,
+# not in other servers") -------------------------------------------------------------
+
+def test_lore_nsfw_guilds_is_only_the_listed_servers_of_the_owners():
+    allowed = frozenset({HOME, OTHER})
+    cfg = lambda **kw: SimpleNamespace(**kw)  # noqa: E731
+    assert bot.lore_nsfw_config(cfg(), allowed) == (frozenset(), "no lore_nsfw_guilds")
+    assert bot.lore_nsfw_config(cfg(lore_nsfw_guilds=[]), allowed) == (frozenset(), "no lore_nsfw_guilds")
+    assert bot.lore_nsfw_config(cfg(lore_nsfw_guilds=[HOME]), allowed) == (frozenset({HOME}), "ok")
+    assert bot.lore_nsfw_config(cfg(lore_nsfw_guilds=HOME), allowed) == (frozenset({HOME}), "ok")
+    # a server that isn't one of the owner's turns it off everywhere
+    assert bot.lore_nsfw_config(cfg(lore_nsfw_guilds=[HOME, 12345]), allowed) == (
+        frozenset(), "lore_nsfw_guilds lists a server that isn't one of the owner's")
+
+
+def test_nsfw_messages_are_read_only_where_allowed(tmp_path):
+    write_log(tmp_path / "messages.log", [
+        rec("spicy home joke", nsfw=True),
+        rec("plain home joke"),
+        rec("spicy other-server joke", guild=OTHER, nsfw=True),
+        rec("spicy private joke", channel=HIDDEN, nsfw=True),
+    ])
+    def texts(**kw):
+        return [ln.text for ln in lore.read_chat(tmp_path, NOW, ALLOWED, BOT_ID, channels=frozenset({GENERAL}), **kw).lines]
+
+    assert texts() == ["plain home joke"]  # the default: no NSFW anywhere
+    assert sorted(texts(nsfw_ok=True)) == ["plain home joke", "spicy home joke"]
+    # the server and channel fences still hold with nsfw_ok on
+    chat = lore.read_chat(tmp_path, NOW, ALLOWED, BOT_ID, channels=frozenset({GENERAL}), nsfw_ok=True)
+    assert chat.left_out == {"other server": 1, "channel": 1}
+
+
+def test_nsfw_channels_count_only_where_allowed():
+    everyone = object()
+
+    def channel(nsfw=True, view=True, kind=discord.ChannelType.text):
+        return SimpleNamespace(is_nsfw=lambda: nsfw, permissions_for=lambda role: SimpleNamespace(view_channel=view),
+                               type=kind)
+
+    assert not bot.lore_channel(channel(), everyone)
+    assert bot.lore_channel(channel(), everyone, nsfw_ok=True)
+    # still public only, and never a private thread
+    assert not bot.lore_channel(channel(view=False), everyone, nsfw_ok=True)
+    assert not bot.lore_channel(channel(kind=discord.ChannelType.private_thread), everyone, nsfw_ok=True)
+
+
+def test_an_update_asks_for_nsfw_only_for_its_own_server():
+    src = inspect.getsource(bot.Nikobot.lore_update)
+    assert "guild_id in self.lore_nsfw_guilds" in src
+    channels = inspect.getsource(bot.Nikobot.lore_channels)
+    assert "nsfw_ok = guild_id in self.lore_nsfw_guilds" in channels
+    assert "lore_channel(channel, guild.default_role, nsfw_ok)" in channels
+    init = inspect.getsource(bot.Nikobot.__init__)
+    assert "frozenset(lore_nsfw_guilds) & frozenset(allowed_guilds)" in init
+    assert "lore_nsfw_config(secrets, allowed)" in inspect.getsource(bot.main)
+
+
 def test_lore_idle_means_unlocked_nobody_waiting_and_loaded():
     def fake(locked=False, waiting=0, loaded=True):
         lock = llm.ModelLock()

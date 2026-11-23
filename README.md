@@ -187,6 +187,7 @@ read-only, by default at `/app/secrets.py`. It defines:
 | `twitch_client_id`, `twitch_client_secret` | the Twitch application's credentials |
 | `image_chance` | optional: the chance that a ping reply comes with an unasked image (default `0.05`, at most `0.25`; `0` means only when asked) |
 | `evolve` | optional: `True` turns on [lore](#lore-an-evolving-personality), the daily running jokes. Off when unset |
+| `lore_nsfw_guilds` | optional: list of server IDs whose lore also reads their NSFW channels. Unset means no NSFW anywhere; a server that isn't one of the two above turns it off for all |
 
 Go-live posts stay off until all four of the last settings are filled in. The
 startup log says which are missing.
@@ -308,7 +309,10 @@ call back to yesterday's joke like a regular would.
 - **What it reads.** The last 24 hours of `/data/messages.log*`, from the
   owner's servers only, in channels everyone in the server can read that
   aren't NSFW (checked against Discord at update time, since the lore turns up
-  in every channel). Never DMs, commands, or anything that hits the
+  in every channel). NSFW channels count too in the servers listed in
+  `lore_nsfw_guilds` (the owner, 2026-11-23: "nsfw channels in VII are ok, not
+  in other servers"), so in those servers a running joke from an NSFW channel
+  can come up in any channel and in `!lore`. Never DMs, commands, or anything that hits the
   serious-topic list, the crisis list or the slur filter. The bot's own replies
   are kept (trimmed to 120 characters), its fixed lines (canned errors, go-live
   posts, `!ip`) are not. At most 250 messages and 12k characters, newest first,

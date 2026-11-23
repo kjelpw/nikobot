@@ -33,8 +33,9 @@ Rules this file enforces (the owner's, 2026-11-18):
   and a failure or a slow caption only ever gives "[image]".
 - Lore (lore.py, the owner's ask 2026-11-19: a personality that evolves),
   only when `evolve` is on in secrets.py: once a day at a quiet hour, the idle
-  model turns the last day of chat (the owner's servers, public non-NSFW
-  channels, nothing serious) into a few running jokes, which ping replies and
+  model turns the last day of chat (the owner's servers, public channels,
+  NSFW ones only in the servers in `lore_nsfw_guilds`, nothing serious) into a
+  few running jokes, which ping replies and
   chime-ins get as flavor. The model's answer is untrusted and every bullet is
   checked. It never makes a reply wait: a reply cancels the update. `!lore`
   shows it, `!forget` (Manage Server only) clears it, and it never reaches
@@ -210,6 +211,22 @@ def lore_config(secrets) -> tuple[bool, str]:
     return False, "evolve isn't True or False"
 
 
+def lore_nsfw_config(secrets, allowed: frozenset[int]) -> tuple[frozenset[int], str]:
+    """Servers whose lore may also learn from NSFW channels: `lore_nsfw_guilds`.
+
+    The owner, 2026-11-23: "nsfw channels in VII are ok, not in other servers".
+    None when unset; a list naming any server that isn't one of the owner's
+    turns it off for all of them (fail closed).
+    """
+    raw = getattr(secrets, "lore_nsfw_guilds", None)
+    guilds = guild_ids(*raw) if isinstance(raw, (list, tuple, set, frozenset)) else guild_ids(raw)
+    if not guilds:
+        return frozenset(), "no lore_nsfw_guilds"
+    if not guilds <= allowed:
+        return frozenset(), "lore_nsfw_guilds lists a server that isn't one of the owner's"
+    return guilds, "ok"
+
+
 def context_without_serious(lines: list[persona.Line]) -> list[persona.Line]:
     """Earlier messages for the joke's context, minus any on serious topics.
 
@@ -252,13 +269,16 @@ def channel_nsfw(channel) -> bool:
         return False
 
 
-def lore_channel(channel, everyone) -> bool:
-    """A channel lore may learn from: not NSFW, and readable by everyone in the server.
+def lore_channel(channel, everyone, nsfw_ok: bool = False) -> bool:
+    """A channel lore may learn from: readable by everyone in the server, and not
+    NSFW unless nsfw_ok (that server is in lore_nsfw_guilds).
 
     Lore shows up in every channel (and in !lore), so it must not carry a
     private channel's chat into public ones.
     """
-    if channel_nsfw(channel) or getattr(channel, "type", None) == discord.ChannelType.private_thread:
+    if getattr(channel, "type", None) == discord.ChannelType.private_thread:
+        return False
+    if channel_nsfw(channel) and not nsfw_ok:
         return False
     try:
         return bool(channel.permissions_for(everyone).view_channel)
@@ -400,6 +420,7 @@ class Nikobot(commands.Bot):
         image_settings: ImageConfig | None = None,
         lore_on: bool = False,
         lore_note: str = "not configured",
+        lore_nsfw_guilds: frozenset[int] = frozenset(),
     ):
         intents = discord.Intents.default()
         intents.message_content = True  # privileged: enable it in the developer portal
@@ -440,6 +461,8 @@ class Nikobot(commands.Bot):
             self.add_command(hush_command)
         self.image_replies = imagine.Images(image_settings.url, image_settings.chance) if image_settings else None
         self.lore_note = lore_note
+        # servers whose lore also reads their NSFW channels (lore_nsfw_config)
+        self.lore_nsfw_guilds = frozenset(lore_nsfw_guilds) & frozenset(allowed_guilds)
         # One lore per server, each learned only from that server's channels
         # and used only there (lore-<guild id>.json in the bot's volume).
         self.lore_stores: dict[int, lore.LoreStore] = {}
@@ -560,11 +583,12 @@ class Nikobot(commands.Bot):
     def lore_channels(self, guild_id: int) -> frozenset[int]:
         """The channels of this one server that lore may learn from, as Discord sees them now."""
         ids = set()
+        nsfw_ok = guild_id in self.lore_nsfw_guilds
         for guild in self.guilds:
             if guild.id != guild_id or guild.id not in self.allowed_guilds:
                 continue
             for channel in [*guild.channels, *guild.threads]:
-                if lore_channel(channel, guild.default_role):
+                if lore_channel(channel, guild.default_role, nsfw_ok):
                     ids.add(channel.id)
         return frozenset(ids)
 
@@ -580,6 +604,7 @@ class Nikobot(commands.Bot):
         chat = await asyncio.to_thread(
             lore.read_chat, DATA_DIR, now, frozenset({guild_id}), self.user.id,
             self.lore_channels(guild_id), store.read_since(), MESSAGE_LOG_FILES,
+            guild_id in self.lore_nsfw_guilds,
         )
         log.info(
             "lore: %d usable of %d message(s) in the last day, %d chars, read in %.1fs (left out: %s)",
@@ -638,7 +663,8 @@ class Nikobot(commands.Bot):
             log.info("chime-ins off (%s)", self.chime_note)
         if self.lore_stores:
             for guild_id, store in self.lore_stores.items():
-                log.info("lore on in guild %s (%s)", guild_id, store.status())
+                nsfw = ", NSFW channels too" if guild_id in self.lore_nsfw_guilds else ""
+                log.info("lore on in guild %s (%s%s)", guild_id, store.status(), nsfw)
         else:
             log.info("lore off (%s)", self.lore_note)
         for guild in self.guilds:
@@ -999,11 +1025,14 @@ def main() -> None:
     chimes, chime_note = chime_config(secrets, allowed)
     replies, replies_note = image_config(secrets, imagine.IMAGEGEN_URL)
     lore_on, lore_note = lore_config(secrets)
+    lore_nsfw, lore_nsfw_note = lore_nsfw_config(secrets, allowed)
+    if lore_nsfw_note not in ("ok", "no lore_nsfw_guilds"):
+        log.warning("lore: NSFW channels stay out everywhere (%s)", lore_nsfw_note)
     if replies is not None:
         log.info("image replies on: when asked, and %.0f%% of other ping replies", replies.chance * 100)
     else:
         log.info("image replies off (%s)", replies_note)
-    Nikobot(allowed, settings, note, chimes, chime_note, replies, lore_on, lore_note).run(
+    Nikobot(allowed, settings, note, chimes, chime_note, replies, lore_on, lore_note, lore_nsfw).run(
         secrets.token, log_handler=None
     )
 
