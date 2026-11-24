@@ -23,7 +23,7 @@ WORKDIR /opt/nikobot
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py chime.py images.py imagine.py llm.py lore.py persona.py safety.py streams.py ./
+COPY bot.py chime.py history.py images.py imagine.py llm.py lore.py persona.py remix.py safety.py streams.py ./
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 

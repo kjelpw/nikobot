@@ -1,5 +1,6 @@
-"""nikobot: the !ip command, a parody AI-assistant persona via a local LLM,
-and go-live posts for the owner's friends' Twitch channels.
+"""nikobot: the !ip command, a chat voice remixed from each server's own chat
+(remix.py, with a local LLM for pictures and serious pings), and go-live posts
+for the owner's friends' Twitch channels.
 
 Rules this file enforces (the owner's, 2026-11-18):
 - It only ever speaks when asked: an @mention or reply to it, or `!ip`.
@@ -23,6 +24,14 @@ Rules this file enforces (the owner's, 2026-11-18):
 - Only in the owner's own servers (the guild IDs in secrets.py). It ignores
   every other server and leaves any new one it gets added to.
 - Never in DMs: a DM gets no reply and never reaches the model.
+- The remix voice (remix.py, the owner's pick 2026-11-23, when `remix` is on
+  in secrets.py): a ping is answered with that server's own chat stitched
+  together, a short line replayed, or a GIF or picture someone posted (from
+  non-NSFW channels only). Crisis language still gets the support line, a
+  serious-looking ping or a picture request still goes to the LLM. History
+  (history.py): two years of each server's public chat, one file per server,
+  fetched once in the background and kept up to date live; it never mixes
+  servers.
 - It logs every message it sees (DMs included) to /data/messages.log*, as
   JSON lines, rotated. It never logs to stdout, so chat text stays out of
   Loki/Grafana.
@@ -52,6 +61,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
 import aiohttp
@@ -63,7 +73,9 @@ import safety
 import chime
 import images
 import imagine
+import history
 import lore
+import remix
 import streams
 from llm import LLMError, LLMTimeout, ModelLock, Ollama
 
@@ -89,6 +101,13 @@ BLOCKLIST_SCAN = 15  # messages the serious-topic list checks before a chime-in
 HUSH_DAYS = 7
 MAX_CHIME_CHANCE = 0.25
 EMBED_WAIT_S = 1.5  # Discord adds a link's embed a moment after the message
+REMIX_DELAY_S = (0.8, 2.5)  # "typing..." before a remix reply, which is instant otherwise
+REMIX_IMAGE_BYTES = 8 * 1024 * 1024  # a replayed picture bigger than this isn't re-sent
+HISTORY_RETRY_S = 10 * 60  # after a failed history fetch
+HISTORY_TRIES = 20
+SEED_WEEKS = 4  # a fresh lore is seeded from the last 4 weeks of history, a week at a time
+SEED_WAIT_S = 5 * 60  # between checks for an idle model while seeding
+SEED_TRIES = 12
 
 
 def guild_ids(*values) -> frozenset[int]:
@@ -211,6 +230,17 @@ def lore_config(secrets) -> tuple[bool, str]:
     return False, "evolve isn't True or False"
 
 
+def remix_config(secrets) -> tuple[bool, str]:
+    """The remix voice (remix.py): `remix` in secrets.py. Off unless it's set on."""
+    raw = getattr(secrets, "remix", None)
+    value = str(raw).strip().lower() if isinstance(raw, (bool, int, str)) or raw is None else "?"
+    if raw is None or value in _OFF:
+        return False, "remix is off"
+    if value in _ON:
+        return True, "ok"
+    return False, "remix isn't True or False"
+
+
 def lore_nsfw_config(secrets, allowed: frozenset[int]) -> tuple[frozenset[int], str]:
     """Servers whose lore may also learn from NSFW channels: `lore_nsfw_guilds`.
 
@@ -288,25 +318,29 @@ def lore_channel(channel, everyone, nsfw_ok: bool = False) -> bool:
 
 def message_record(message) -> str:
     """One JSON line describing a message, for the message log."""
+    return json.dumps(message_dict(message), ensure_ascii=False)
+
+
+def message_dict(message) -> dict:
+    """A message as a dict: the message log's lines and the history files' (history.py)."""
     guild = message.guild
     channel = message.channel
-    return json.dumps(
-        {
-            "at": message.created_at.isoformat(),
-            "guild": guild.name if guild is not None else None,
-            "guild_id": guild.id if guild is not None else None,
-            "channel": getattr(channel, "name", None) or "DM",
-            "channel_id": channel.id,
-            "nsfw": channel_nsfw(channel),
-            "author": str(message.author),
-            "author_id": message.author.id,
-            "name": getattr(message.author, "display_name", None),
-            "bot": bool(message.author.bot),
-            "content": message.content,
-            "attachments": [a.url for a in message.attachments],
-        },
-        ensure_ascii=False,
-    )
+    return {
+        "id": getattr(message, "id", None),
+        "at": message.created_at.isoformat(),
+        "guild": guild.name if guild is not None else None,
+        "guild_id": guild.id if guild is not None else None,
+        "channel": getattr(channel, "name", None) or "DM",
+        "channel_id": channel.id,
+        "nsfw": channel_nsfw(channel),
+        "author": str(message.author),
+        "author_id": message.author.id,
+        "name": getattr(message.author, "display_name", None),
+        "bot": bool(message.author.bot),
+        "webhook": getattr(message, "webhook_id", None) is not None,
+        "content": message.content,
+        "attachments": [a.url for a in message.attachments],
+    }
 
 
 def make_message_log(path: Path) -> logging.Logger | None:
@@ -421,6 +455,8 @@ class Nikobot(commands.Bot):
         lore_on: bool = False,
         lore_note: str = "not configured",
         lore_nsfw_guilds: frozenset[int] = frozenset(),
+        remix_on: bool = False,
+        remix_note: str = "not configured",
     ):
         intents = discord.Intents.default()
         intents.message_content = True  # privileged: enable it in the developer portal
@@ -463,6 +499,12 @@ class Nikobot(commands.Bot):
         self.lore_note = lore_note
         # servers whose lore also reads their NSFW channels (lore_nsfw_config)
         self.lore_nsfw_guilds = frozenset(lore_nsfw_guilds) & frozenset(allowed_guilds)
+        # The remix voice (remix.py): one per server, built from that server's
+        # history file only. Missing or too small: the LLM answers instead.
+        self.remix_on = remix_on
+        self.remix_note = remix_note
+        self.remixes: dict[int, remix.Remix] = {}
+        self.history_task: asyncio.Task | None = None
         # One lore per server, each learned only from that server's channels
         # and used only there (lore-<guild id>.json in the bot's volume).
         self.lore_stores: dict[int, lore.LoreStore] = {}
@@ -498,6 +540,8 @@ class Nikobot(commands.Bot):
             self.stream_watch.start()
         if self.lore_stores:
             self.lore_watch.start()
+        if self.remix_on or self.lore_stores:
+            self.history_task = asyncio.create_task(self.run_history())
 
     # --- go-live posts -----------------------------------------------------
 
@@ -592,7 +636,7 @@ class Nikobot(commands.Bot):
                     ids.add(channel.id)
         return frozenset(ids)
 
-    async def lore_update(self, guild_id: int) -> str:
+    async def lore_update(self, guild_id: int, chat: lore.Chat | None = None) -> str:
         """Read one server's last day of chat and ask the model for its new lore (lore.update).
 
         Only that server's messages (guild filter) from its own channels (channel
@@ -601,13 +645,14 @@ class Nikobot(commands.Bot):
         now = lore.local_now()
         started = time.monotonic()
         store = self.lore_stores[guild_id]
-        chat = await asyncio.to_thread(
-            lore.read_chat, DATA_DIR, now, frozenset({guild_id}), self.user.id,
-            self.lore_channels(guild_id), store.read_since(), MESSAGE_LOG_FILES,
-            guild_id in self.lore_nsfw_guilds,
-        )
+        if chat is None:  # the daily update: the message log's last day
+            chat = await asyncio.to_thread(
+                lore.read_chat, DATA_DIR, now, frozenset({guild_id}), self.user.id,
+                self.lore_channels(guild_id), store.read_since(), MESSAGE_LOG_FILES,
+                guild_id in self.lore_nsfw_guilds,
+            )
         log.info(
-            "lore: %d usable of %d message(s) in the last day, %d chars, read in %.1fs (left out: %s)",
+            "lore: %d usable of %d message(s), %d chars, read in %.1fs (left out: %s)",
             len(chat.entries), chat.read, chat.chars, time.monotonic() - started,
             ", ".join(f"{k} {v}" for k, v in sorted(chat.left_out.items())) or "none",
         )
@@ -629,7 +674,158 @@ class Nikobot(commands.Bot):
             return ()
         return store.current()
 
+    # --- history: two years of each server's chat (history.py) -------------------
+
+    def history_channels(self, guild: discord.Guild) -> list:
+        """The channels to fetch history from: lore's fence, and readable history."""
+        nsfw_ok = guild.id in self.lore_nsfw_guilds
+        found = []
+        for channel in [*guild.text_channels, *guild.voice_channels, *guild.stage_channels, *guild.threads]:
+            if not lore_channel(channel, guild.default_role, nsfw_ok):
+                continue
+            try:
+                if not channel.permissions_for(guild.me).read_message_history:
+                    continue
+            except Exception:  # noqa: BLE001 - a missing parent and the like
+                continue
+            found.append(channel)
+        return found
+
+    async def run_history(self) -> None:
+        """Per server, one at a time: load its remix, fetch any history still missing, then
+        rebuild the remix and seed an empty lore. Never raises; logs counts only."""
+        await self.wait_until_ready()
+        for guild_id in sorted(self.allowed_guilds):
+            try:
+                await self.history_for(guild_id)
+            except Exception as exc:  # noqa: BLE001 - one server's trouble mustn't stop the other
+                log.warning("history: guild %s: %s", guild_id, type(exc).__name__)
+
+    async def history_for(self, guild_id: int) -> None:
+        guild = self.get_guild(guild_id)
+        if guild is None:
+            return
+        path = history.corpus_path(DATA_DIR, guild_id)
+        state = history.BackfillState.load(history.state_path(DATA_DIR, guild_id))
+        if self.remix_on:
+            await self.load_remix(guild_id)
+        tries = 0
+        while not state.done and tries < HISTORY_TRIES:
+            tries += 1
+            started, since = time.monotonic(), history.cutoff()
+            outcomes = []
+            for channel in self.history_channels(guild):
+                outcomes.append(await history.backfill_channel(
+                    channel, state, path, since, message_dict, guild_id,
+                    pause=lambda: asyncio.sleep(history.PAUSE_S),
+                ))
+            if "error" in outcomes:
+                log.info("history: guild %s: %d message(s) so far; trying again in %d min",
+                         guild_id, state.count, HISTORY_RETRY_S // 60)
+                await asyncio.sleep(HISTORY_RETRY_S)
+                continue
+            state.done = True
+            state.save()
+            log.info("history: guild %s: done, %d message(s) from %d channel(s) in %.0f min (%d skipped)",
+                     guild_id, state.count, len(outcomes), (time.monotonic() - started) / 60,
+                     outcomes.count("forbidden"))
+            if self.remix_on:
+                await self.load_remix(guild_id)
+        await self.seed_lore(guild_id)
+
+    async def load_remix(self, guild_id: int) -> None:
+        nsfw_ok = guild_id in self.lore_nsfw_guilds
+        started = time.monotonic()
+        built = await asyncio.to_thread(remix.Remix.load, history.corpus_path(DATA_DIR, guild_id), guild_id, nsfw_ok)
+        self.remixes[guild_id] = built
+        log.info("remix: guild %s: %d lines, %d GIFs, %d pictures, built in %.1fs (%s)",
+                 guild_id, len(built.lines), len(built.gifs), len(built.images), time.monotonic() - started,
+                 "ready" if built.ready else f"not ready, under {remix.MIN_LINES} lines; the LLM answers")
+
+    async def seed_lore(self, guild_id: int) -> None:
+        """A lore that was never updated (nor wiped) is seeded from the last weeks of
+        history, oldest week first, each pass an ordinary update (the owner, 2026-11-23:
+        "go through message history in discord to quickly build up the lore files")."""
+        store = self.lore_stores.get(guild_id)
+        if store is None or store.current() or store.updated is not None:
+            return
+        path = history.corpus_path(DATA_DIR, guild_id)
+        channels, nsfw_ok = self.lore_channels(guild_id), guild_id in self.lore_nsfw_guilds
+        now = lore.local_now()
+        for weeks_ago in range(SEED_WEEKS, 0, -1):
+            end = now - timedelta(weeks=weeks_ago - 1)
+            records = await asyncio.to_thread(history.read, path, guild_id, end - timedelta(weeks=1), end)
+            chat = lore.select_chat(records, frozenset({guild_id}), self.user.id, channels, nsfw_ok)
+            for _ in range(SEED_TRIES):
+                if store.updated is not None and store.cleared:
+                    return  # someone used !forget meanwhile
+                if await self.lore_idle():
+                    outcome = await self.lore_update(guild_id, chat=chat)
+                    if outcome not in ("busy", "empty answer", "error"):
+                        log.info("lore: guild %s: seed week -%d: %s", guild_id, weeks_ago, outcome)
+                        break
+                await asyncio.sleep(SEED_WAIT_S)
+
+    def remix_here(self, guild_id: int | None) -> remix.Remix | None:
+        """This server's remix, when it's on and has enough lines; else None (the LLM answers)."""
+        current = self.remixes.get(guild_id) if self.remix_on and guild_id is not None else None
+        return current if current is not None and current.ready else None
+
+    async def remix_reply(self, message: discord.Message, current: remix.Remix, trigger: persona.Line) -> None:
+        """A ping answered from the server's own chat: a stitched line, a short line, or a reaction."""
+        reply = current.reply(trigger.text, random)
+        async with message.channel.typing():
+            await asyncio.sleep(random.uniform(*REMIX_DELAY_S))
+        if reply is not None and reply.kind == "image":
+            if await self.send_remix_image(message, reply.image):
+                log.info("chat: remix picture")
+                return
+            reply = current.reply(trigger.text, random, reactions=False)
+        text = reply.text if reply is not None else None
+        if not text or safety.has_slur(text):  # the lines are filtered going in; this is belt and braces
+            reply = current.reply(None, random, reactions=False)
+            text = reply.text if reply is not None and not safety.has_slur(reply.text or "") else None
+        if not text:
+            log.info("chat: remix had nothing; sent an empty line")
+            await self.send(message.channel, random.choice(persona.EMPTY_LINES), message)
+            return
+        sent = await self.send(message.channel, text, message)
+        log.info("chat: remix %s, %d chars", reply.kind, len(text))
+        if self.image_replies is not None and reply.kind != "gif":  # now and then a drawn picture too (#29)
+            await self.image_replies.follow_up(self, message, [trigger], text, reply_msg=sent)
+
+    async def send_remix_image(self, message: discord.Message, ref: tuple[int, int] | None) -> bool:
+        """Re-post a picture someone posted in this server, fetched fresh (links expire).
+
+        Only from a channel that is still public and not NSFW, never a spoiler.
+        """
+        if ref is None:
+            return False
+        guild = message.guild
+        source = guild.get_channel_or_thread(ref[0])
+        if source is None or not lore_channel(source, guild.default_role, False):
+            return False
+        try:
+            original = await source.fetch_message(ref[1])
+            picture = next(
+                (a for a in original.attachments
+                 if (a.content_type or "").startswith("image/") and a.size <= REMIX_IMAGE_BYTES and not a.is_spoiler()),
+                None,
+            )
+            if picture is None:
+                return False
+            file = await picture.to_file()
+            await message.channel.send(
+                file=file, reference=message.to_reference(fail_if_not_exists=False),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (discord.HTTPException, OSError):
+            return False
+        return True
+
     async def close(self) -> None:
+        if self.history_task is not None:
+            self.history_task.cancel()
         await super().close()
         if self.http_session is not None:
             await self.http_session.close()
@@ -667,6 +863,8 @@ class Nikobot(commands.Bot):
                 log.info("lore on in guild %s (%s%s)", guild_id, store.status(), nsfw)
         else:
             log.info("lore off (%s)", self.lore_note)
+        if not self.remix_on:
+            log.info("remix off (%s)", self.remix_note)
         for guild in self.guilds:
             log.info(
                 "in guild %s (%s): %s",
@@ -695,6 +893,7 @@ class Nikobot(commands.Bot):
             return  # DMs: logged, never answered, never sent to the model
         if not ip_allowed(message.guild.id, self.allowed_guilds):
             return  # not one of the owner's servers
+        self.remember(message)
         if message.author.bot or message.webhook_id is not None:
             return
         if message.type not in CHAT_TYPES:
@@ -710,6 +909,26 @@ class Nikobot(commands.Bot):
             return
         if chiming:
             await self.maybe_chime(message)
+
+    def remember(self, message: discord.Message) -> None:
+        """A new message into its server's history file and remix (history.py, remix.py)."""
+        if self.history_task is None:
+            return
+        guild = message.guild
+        nsfw_ok = guild.id in self.lore_nsfw_guilds
+        if message.type not in CHAT_TYPES or not lore_channel(message.channel, guild.default_role, nsfw_ok):
+            return
+        try:
+            rec = message_dict(message)
+            if not history.keep(rec, guild.id):
+                return
+            history.append(history.corpus_path(DATA_DIR, guild.id), [rec])
+            current = self.remixes.get(guild.id)
+            if current is not None:
+                # people's names only: a mention of a bot (this one, mostly) is dropped
+                current.add(rec, {u.id: u.display_name for u in message.mentions if not u.bot}, nsfw_ok)
+        except Exception as exc:  # noqa: BLE001 - this must never break the bot
+            log.warning("history: couldn't keep a message (%s)", type(exc).__name__)
 
     def record(self, message: discord.Message) -> None:
         if self.message_log is None:
@@ -885,6 +1104,13 @@ class Nikobot(commands.Bot):
             log.info("chat: crisis language, sent fixed support line")
             await self.send(message.channel, safety.CRISIS_LINE, message)
             return
+        # The remix voice answers unless the ping asks for a picture or looks
+        # serious (then the LLM's plain answer); without it, the LLM as before.
+        current = self.remix_here(message.guild.id)
+        if (current is not None and not safety.is_serious([trigger.text])
+                and not (self.image_replies is not None and self.image_replies.asked(message, self.user.id))):
+            await self.remix_reply(message, current, trigger)
+            return
         if self.waiting >= MAX_WAITING:
             log.info("chat: too many queued, sent busy line")
             await self.send(message.channel, random.choice(persona.BUSY_LINES), message)
@@ -982,11 +1208,16 @@ class Nikobot(commands.Bot):
         if not decision.ok:
             return
         async with channel.typing():
-            voice = persona.pick_voice(random)
-            prompt = persona.build_chat_messages(
-                lines, direction=persona.CHIME_DIRECTION, voice=voice, lore=self.lore_for(message.guild.id),
-            )
-            text = await self.generate(prompt, canned_errors=False, caps=persona.reply_caps(voice))
+            current = self.remix_here(message.guild.id)
+            if current is not None:  # the remix voice, text only; still through every check below
+                picked = current.reply(None, random, reactions=False)
+                text = picked.text if picked is not None else ""
+            else:
+                voice = persona.pick_voice(random)
+                prompt = persona.build_chat_messages(
+                    lines, direction=persona.CHIME_DIRECTION, voice=voice, lore=self.lore_for(message.guild.id),
+                )
+                text = await self.generate(prompt, canned_errors=False, caps=persona.reply_caps(voice))
             if not text:
                 log.info("chime: nothing usable generated; not posting")
                 return
@@ -1026,13 +1257,15 @@ def main() -> None:
     replies, replies_note = image_config(secrets, imagine.IMAGEGEN_URL)
     lore_on, lore_note = lore_config(secrets)
     lore_nsfw, lore_nsfw_note = lore_nsfw_config(secrets, allowed)
+    remix_on, remix_note = remix_config(secrets)
     if lore_nsfw_note not in ("ok", "no lore_nsfw_guilds"):
         log.warning("lore: NSFW channels stay out everywhere (%s)", lore_nsfw_note)
     if replies is not None:
         log.info("image replies on: when asked, and %.0f%% of other ping replies", replies.chance * 100)
     else:
         log.info("image replies off (%s)", replies_note)
-    Nikobot(allowed, settings, note, chimes, chime_note, replies, lore_on, lore_note, lore_nsfw).run(
+    Nikobot(allowed, settings, note, chimes, chime_note, replies, lore_on, lore_note, lore_nsfw,
+            remix_on, remix_note).run(
         secrets.token, log_handler=None
     )
 
