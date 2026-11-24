@@ -98,7 +98,10 @@ DATA_DIR = Path(os.environ.get("NIKOBOT_DATA_DIR", "/data"))
 SECRETS_PATH = Path(os.environ.get("NIKOBOT_SECRETS", "/app/secrets.py"))
 
 MAX_WAITING = 3  # chat requests allowed to queue for the model before "busy"
-CHAT_COOLDOWN_S = 20  # per person: extra pings inside this window are ignored
+CHAT_COOLDOWN_S = 20  # per person, for LLM replies: extra pings inside this window are ignored
+# Remix replies are instant, so only a spam guard (live 2026-11-23: a second
+# ping 17 s after the first was ignored, and the owner saw the bot skip it).
+REMIX_COOLDOWN_S = 3
 MESSAGE_LOG_BYTES = 10 * 1024 * 1024  # per file; 10 rotated files kept
 MESSAGE_LOG_FILES = 10
 CHAT_TYPES = (discord.MessageType.default, discord.MessageType.reply)
@@ -523,6 +526,7 @@ class Nikobot(commands.Bot):
         self.stream_errors = 0
         self.stream_channel_problem: str | None = None
         self.cooldown = Cooldown(CHAT_COOLDOWN_S)
+        self.remix_cooldown = Cooldown(REMIX_COOLDOWN_S)
         self.message_log = make_message_log(DATA_DIR / "messages.log")
         # a reply always gets it: the lore update gives way (llm.ModelLock)
         self.llm_lock = ModelLock()
@@ -1188,19 +1192,21 @@ class Nikobot(commands.Bot):
         return True
 
     async def chat(self, message: discord.Message) -> None:
-        if not self.cooldown.allow(message.author.id, time.monotonic()):
-            log.info("chat: same person pinged again within %ds; ignored", CHAT_COOLDOWN_S)
-            return
         trigger = self.to_line(message) or persona.Line(message.author.display_name, "*pokes you*")
-        if safety.is_crisis(trigger.text):
+        if safety.is_crisis(trigger.text):  # before any cooldown: this line is never skipped
             log.info("chat: crisis language, sent fixed support line")
             await self.send(message.channel, safety.CRISIS_LINE, message)
             return
         # The remix voice answers unless the ping asks for a picture or looks
         # serious (then the LLM's plain answer); without it, the LLM as before.
         current = self.remix_here(message.guild.id)
-        if (current is not None and not safety.is_serious([trigger.text])
-                and not (self.image_replies is not None and self.image_replies.asked(message, self.user.id))):
+        remixing = (current is not None and not safety.is_serious([trigger.text])
+                    and not (self.image_replies is not None and self.image_replies.asked(message, self.user.id)))
+        cooldown, window = (self.remix_cooldown, REMIX_COOLDOWN_S) if remixing else (self.cooldown, CHAT_COOLDOWN_S)
+        if not cooldown.allow(message.author.id, time.monotonic()):
+            log.info("chat: same person pinged again within %ds; ignored", window)
+            return
+        if remixing:
             await self.remix_reply(message, current, trigger)
             return
         if self.waiting >= MAX_WAITING:

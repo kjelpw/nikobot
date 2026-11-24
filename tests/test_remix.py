@@ -413,3 +413,12 @@ def test_wordle_grids_dont_make_squares_the_favourite_emoji(monkeypatch):
     monkeypatch.setattr(remix, "MIN_LINES", 1)
     built = remix.Remix.build([rec(1, "wordle 3/6 🟩🟩🟨⬛🟩"), rec(2, "😂😂😂 lol")], HOME)
     assert dict(built.emoji) == {"😂": 1}  # once per line, no grid squares
+
+
+def test_remix_replies_only_have_a_spam_guard_and_crisis_comes_first():
+    # live 2026-11-23: a second ping 17 s after the first was ignored by the LLM-era 20 s cooldown
+    assert bot.REMIX_COOLDOWN_S <= 5 < bot.CHAT_COOLDOWN_S
+    src = inspect.getsource(bot.Nikobot.chat)
+    assert src.index("safety.is_crisis(trigger.text)") < src.index("cooldown.allow(")
+    assert "(self.remix_cooldown, REMIX_COOLDOWN_S) if remixing else (self.cooldown, CHAT_COOLDOWN_S)" in src
+    assert src.index("cooldown.allow(") < src.index("self.remix_reply(") < src.index("self.generate(prompt")
