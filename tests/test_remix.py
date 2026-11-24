@@ -450,3 +450,26 @@ def test_a_ping_isnt_added_to_the_live_remix():
     src = inspect.getsource(bot.Nikobot.remember)
     assert "history.append(" in src and "not self.addressed(message)" in src
     assert src.index("history.append(") < src.index("not self.addressed(message)")
+
+
+# --- emoji in replies (the owner, 2026-11-23: "more emojis in messages please!") -----
+
+def test_replies_get_the_servers_emoji_about_half_the_time(monkeypatch):
+    monkeypatch.setattr(remix, "MIN_LINES", 1)
+    current = remix.Remix.build([rec(1, "pizza 🍕"), rec(2, "gg <:pog:123456789012345678>"), rec(3, "lmao 😭")], HOME)
+    pog = SimpleNamespace(id=123456789012345678, available=True, __str__=lambda self: "<:pog:123456789012345678>")
+    guild = SimpleNamespace(emojis=[])  # pog is gone from the server
+    outs = [bot.with_emoji("who wants pizza", current, guild, "pizza") for _ in range(400)]
+    with_one = [o for o in outs if o != "who wants pizza"]
+    assert 120 < len(with_one) < 280  # about half
+    assert all("pog" not in o for o in outs)  # a custom one only while the server has it
+    tails = {o.split(" ")[-1] for o in with_one}
+    assert tails <= {"🍕", "🍕🍕", "🍕🍕🍕", "😭", "😭😭", "😭😭😭"} and any(len(t) > 1 for t in tails)
+    assert bot.with_emoji("already 😂", current, guild, "x") == "already 😂"  # it has one
+
+
+def test_remix_replies_and_chime_ins_get_emoji_but_gifs_dont():
+    src = inspect.getsource(bot.Nikobot.remix_reply)
+    assert 'if reply.kind != "gif":' in src and "with_emoji(text, current, message.guild" in src
+    assert "with_emoji(picked.text" in inspect.getsource(bot.Nikobot.maybe_chime)
+    assert "pick_emoji(current, message.guild, text)" in inspect.getsource(bot.Nikobot.maybe_react)

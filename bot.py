@@ -34,6 +34,8 @@ Rules this file enforces (the owner's, 2026-11-18):
   read (the owner: "All channels mix"; lore stays public-only), one file per server,
   fetched once in the background and kept up to date live; it never mixes
   servers.
+- Emoji in replies (with_emoji, the owner 2026-11-23: "more emojis in messages
+  please!"): half of remix text replies end with one of the server's emoji.
 - Emoji reactions (maybe_react, the owner 2026-11-23): at `react_chance` per
   person's message, on its own roll apart from any reply, an emoji this server
   uses (custom ones only if it still has them). Never on serious, crisis or
@@ -117,6 +119,11 @@ REMIX_SOURCE_TRIES = 4  # pictures tried before drawing from scratch (deleted on
 MAX_REACT_CHANCE = 0.25
 REACT_COOLDOWN_S = 10 * 60  # per channel: at most one emoji reaction in this long
 REACT_TRIES = 3  # emoji drawn before giving up (a custom one the server no longer has)
+# "more emojis in messages please!" (the owner, 2026-11-23): this share of text
+# replies get one of the server's emoji on the end, sometimes repeated like
+# people do ("😭😭"), unless the line already has one.
+REPLY_EMOJI_SHARE = 0.5
+REPLY_EMOJI_REPEATS = ((1, 0.6), (2, 0.25), (3, 0.15))
 _CUSTOM_EMOJI = re.compile(r"<a?:\w+:(\d+)>")
 HISTORY_RETRY_S = 10 * 60  # after a failed history fetch
 HISTORY_TRIES = 20
@@ -362,6 +369,33 @@ def remix_channel(channel, me, nsfw_ok: bool = False) -> bool:
         return bool(perms.view_channel and perms.read_message_history)
     except Exception:  # noqa: BLE001 - categories, missing parents: not readable
         return False
+
+
+def pick_emoji(current, guild, text: str | None, tries: int = REACT_TRIES):
+    """One of the server's emoji for this text (remix.react_emoji): a unicode string, or
+    the server's Emoji object for a custom one it still has. None if none works."""
+    for _ in range(tries):
+        pick = current.react_emoji(text, random)
+        if pick is None:
+            return None
+        custom = _CUSTOM_EMOJI.fullmatch(pick)
+        if custom is None:
+            return pick
+        found = discord.utils.get(guild.emojis, id=int(custom.group(1)))
+        if found is not None and found.available:
+            return found
+    return None
+
+
+def with_emoji(text: str, current, guild, context: str | None) -> str:
+    """A remix reply, now and then with the server's emoji on the end (REPLY_EMOJI_SHARE)."""
+    if random.random() >= REPLY_EMOJI_SHARE or remix.EMOJI.search(text):
+        return text
+    emoji = pick_emoji(current, guild, context)
+    if emoji is None:
+        return text
+    times = random.choices([n for n, _ in REPLY_EMOJI_REPEATS], [w for _, w in REPLY_EMOJI_REPEATS])[0]
+    return f"{text} {str(emoji) * times}"
 
 
 def message_record(message) -> str:
@@ -836,6 +870,8 @@ class Nikobot(commands.Bot):
             log.info("chat: remix had nothing; sent an empty line")
             await self.send(message.channel, random.choice(persona.EMPTY_LINES), message)
             return
+        if reply.kind != "gif":
+            text = with_emoji(text, current, message.guild, f"{trigger.text} {text}")
         sent = await self.send(message.channel, text, message)
         log.info("chat: remix %s, %d chars", reply.kind, len(text))
         if self.image_replies is not None and reply.kind != "gif":  # now and then a drawn picture too (#29)
@@ -863,17 +899,7 @@ class Nikobot(commands.Bot):
         text = message.content or ""
         if safety.is_crisis(text) or safety.is_serious([text]) or safety.has_slur(text):
             return
-        emoji = None
-        for _ in range(REACT_TRIES):
-            pick = current.react_emoji(text, random)
-            custom = _CUSTOM_EMOJI.fullmatch(pick or "")
-            if custom is None:
-                emoji = pick
-            else:  # only one this server still has
-                found = discord.utils.get(message.guild.emojis, id=int(custom.group(1)))
-                emoji = found if found is not None and found.available else None
-            if emoji is not None:
-                break
+        emoji = pick_emoji(current, message.guild, text)
         if emoji is None:
             return
         try:
@@ -1312,7 +1338,7 @@ class Nikobot(commands.Bot):
             current = self.remix_here(message.guild.id)
             if current is not None:  # the remix voice, text only; still through every check below
                 picked = current.reply(None, random, reactions=False)
-                text = picked.text if picked is not None else ""
+                text = with_emoji(picked.text, current, message.guild, picked.text) if picked and picked.text else ""
             else:
                 voice = persona.pick_voice(random)
                 prompt = persona.build_chat_messages(
