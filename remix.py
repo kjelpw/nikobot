@@ -61,9 +61,13 @@ COMMON_SHARE = 0.02  # a ping word in more lines than this is too common to be a
 
 _USER_MENTION = re.compile(r"<@!?(\d+)>")
 _OTHER_MENTION = re.compile(r"<@&\d+>|<#\d+>|@(?:everyone|here)\b")
+# Discord's GIF picker moved from Tenor to Klipy in 2026 (Tenor's API shut down on
+# 2026-06-30), so newer reaction GIFs are klipy.com/gifs/... links (42 in Ⅶ by 2026-11-23).
+# Only links people posted are replayed: no Klipy API calls (its terms want a
+# bot's server-side requests approved first).
 _GIF_LINK = re.compile(
     r"https?://(?:www\.)?(?:tenor\.com/view/|media\d*\.tenor\.com/|c\.tenor\.com/|giphy\.com/gifs/"
-    r"|media\d*\.giphy\.com/)[^\s<>]+",
+    r"|media\d*\.giphy\.com/|klipy\.com/gifs/|static\.klipy\.com/)[^\s<>]+",
     re.IGNORECASE,
 )
 _COMMAND = re.compile(r"^\s*[!/$?;+\-.]\w")

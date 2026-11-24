@@ -63,6 +63,9 @@ def test_gif_link_only_when_the_message_is_just_a_gif():
     assert remix.gif_link(" https://media.giphy.com/media/x/giphy.gif ") == "https://media.giphy.com/media/x/giphy.gif"
     assert remix.gif_link("lol https://tenor.com/view/cat-stare-123") is None
     assert remix.gif_link("https://example.com/cat.gif") is None
+    # Discord's picker posts Klipy links since 2026
+    assert remix.gif_link("https://klipy.com/gifs/hello-hi-662") == "https://klipy.com/gifs/hello-hi-662"
+    assert remix.gif_link("https://klipy.com/about") is None
 
 
 def test_build_takes_only_this_servers_people(monkeypatch):
