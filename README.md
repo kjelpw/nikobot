@@ -187,6 +187,7 @@ read-only, by default at `/app/secrets.py`. It defines:
 | `twitch_client_id`, `twitch_client_secret` | the Twitch application's credentials |
 | `image_chance` | optional: the chance that a ping reply comes with an unasked image (default `0.05`, at most `0.25`; `0` means only when asked) |
 | `evolve` | optional: `True` turns on [lore](#lore-an-evolving-personality), the daily running jokes. Off when unset |
+| `react_chance` | optional: the chance (0 to 0.25) that a person's message gets an emoji reaction, on its own roll. Needs `remix`. Off when unset |
 | `remix` | optional: `True` turns on the [remix voice](#remix-voice-the-servers-own-chat) and the two-year history it's built from. Off when unset |
 | `lore_nsfw_guilds` | optional: list of server IDs whose lore also reads their NSFW channels. Unset means no NSFW anywhere; a server that isn't one of the two above turns it off for all |
 
@@ -327,8 +328,19 @@ history. With `remix = True` in `secrets.py`:
     server-side requests.
   Pictures are never re-posted as they were: the bot's pictures are remixes
   of them (see [Image replies](#image-replies)).
-  Half the time it starts from an uncommon word in the ping, so a reply can
-  land near the topic.
+  Most of the time (70%) it starts from an uncommon word in the ping. It also
+  makes a few candidates and draws one with a lean toward ones that share
+  words with the ping and join smoothly (where two words overlap at a jump),
+  so replies make a bit more sense while staying random (the owner,
+  2026-11-23: "slightly weight the messages towards something that makes
+  more sense rather than just pulling random").
+- **Emoji reactions** (`react_chance` per message, 3% here): on its own roll,
+  apart from any reply (the owner, 2026-11-23: "it should also sometimes react
+  to messages ... a separate roll"), it adds an emoji reaction to someone's
+  message. The emoji is one the server uses in chat (custom ones only while
+  the server still has them; no Wordle squares), leaning toward ones used next
+  to the message's words. Never on a message that hits the serious-topic list,
+  the crisis list or the slur filter; at most one per channel every 10 minutes.
 - **What still goes to the LLM:** a ping that asks for a picture (imagine.py),
   and a serious-looking ping (the plain "I'm only a joke bot" answer). Crisis
   language still gets the fixed support line first. Until a server's remix

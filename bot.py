@@ -34,6 +34,10 @@ Rules this file enforces (the owner's, 2026-11-18):
   read (the owner: "All channels mix"; lore stays public-only), one file per server,
   fetched once in the background and kept up to date live; it never mixes
   servers.
+- Emoji reactions (maybe_react, the owner 2026-11-23): at `react_chance` per
+  person's message, on its own roll apart from any reply, an emoji this server
+  uses (custom ones only if it still has them). Never on serious, crisis or
+  slur messages; at most one per channel every 10 minutes.
 - It logs every message it sees (DMs included) to /data/messages.log*, as
   JSON lines, rotated. It never logs to stdout, so chat text stays out of
   Loki/Grafana.
@@ -61,6 +65,7 @@ import logging
 import logging.handlers
 import os
 import random
+import re
 import time
 from dataclasses import dataclass
 from datetime import timedelta
@@ -106,6 +111,10 @@ EMBED_WAIT_S = 1.5  # Discord adds a link's embed a moment after the message
 REMIX_DELAY_S = (0.8, 2.5)  # "typing..." before a remix reply, which is instant otherwise
 REMIX_IMAGE_BYTES = 8 * 1024 * 1024  # a source picture bigger than this isn't remixed
 REMIX_SOURCE_TRIES = 4  # pictures tried before drawing from scratch (deleted ones, say)
+MAX_REACT_CHANCE = 0.25
+REACT_COOLDOWN_S = 10 * 60  # per channel: at most one emoji reaction in this long
+REACT_TRIES = 3  # emoji drawn before giving up (a custom one the server no longer has)
+_CUSTOM_EMOJI = re.compile(r"<a?:\w+:(\d+)>")
 HISTORY_RETRY_S = 10 * 60  # after a failed history fetch
 HISTORY_TRIES = 20
 SEED_WEEKS = 4  # a fresh lore is seeded from the last 4 weeks of history, a week at a time
@@ -242,6 +251,20 @@ def remix_config(secrets) -> tuple[bool, str]:
     if value in _ON:
         return True, "ok"
     return False, "remix isn't True or False"
+
+
+def react_config(secrets) -> tuple[float, str]:
+    """Emoji reactions (maybe_react): `react_chance` in secrets.py, per message. Off when unset."""
+    raw = getattr(secrets, "react_chance", None)
+    if raw is None:
+        return 0.0, "no react_chance"
+    try:
+        chance = float(raw)
+    except (TypeError, ValueError):
+        return 0.0, "react_chance isn't a number"
+    if not 0 <= chance <= MAX_REACT_CHANCE:
+        return 0.0, f"react_chance must be 0 to {MAX_REACT_CHANCE}"
+    return chance, "ok" if chance else "react_chance is 0"
 
 
 def lore_nsfw_config(secrets, allowed: frozenset[int]) -> tuple[frozenset[int], str]:
@@ -479,6 +502,7 @@ class Nikobot(commands.Bot):
         lore_nsfw_guilds: frozenset[int] = frozenset(),
         remix_on: bool = False,
         remix_note: str = "not configured",
+        react_chance: float = 0.0,
     ):
         intents = discord.Intents.default()
         intents.message_content = True  # privileged: enable it in the developer portal
@@ -526,6 +550,8 @@ class Nikobot(commands.Bot):
         self.remix_on = remix_on
         self.remix_note = remix_note
         self.remixes: dict[int, remix.Remix] = {}
+        self.react_chance = react_chance
+        self.react_last: dict[int, float] = {}  # channel -> when it last got a reaction
         self.history_task: asyncio.Task | None = None
         # One lore per server, each learned only from that server's channels
         # and used only there (lore-<guild id>.json in the bot's volume).
@@ -811,6 +837,49 @@ class Nikobot(commands.Bot):
         if self.image_replies is not None and reply.kind != "gif":  # now and then a drawn picture too (#29)
             await self.image_replies.follow_up(self, message, [trigger], text, reply_msg=sent)
 
+    async def maybe_react(self, message: discord.Message) -> None:
+        """Now and then an emoji reaction on someone's message, on its own roll apart
+        from any reply (the owner, 2026-11-23: "it should also sometimes react to
+        messages, this isn't part of its other replies a separate roll").
+
+        The emoji is one this server uses, leaning toward ones used next to the
+        message's words (remix.react_emoji). Never on a message that hits the
+        serious-topic list, the crisis list or the slur filter; at most one per
+        channel every 10 minutes. Logs say only that it reacted.
+        """
+        if self.react_chance <= 0 or random.random() >= self.react_chance:
+            return
+        current = self.remix_here(message.guild.id)
+        if current is None:
+            return
+        now = time.monotonic()
+        last = self.react_last.get(message.channel.id)
+        if last is not None and now - last < REACT_COOLDOWN_S:
+            return
+        text = message.content or ""
+        if safety.is_crisis(text) or safety.is_serious([text]) or safety.has_slur(text):
+            return
+        emoji = None
+        for _ in range(REACT_TRIES):
+            pick = current.react_emoji(text, random)
+            custom = _CUSTOM_EMOJI.fullmatch(pick or "")
+            if custom is None:
+                emoji = pick
+            else:  # only one this server still has
+                found = discord.utils.get(message.guild.emojis, id=int(custom.group(1)))
+                emoji = found if found is not None and found.available else None
+            if emoji is not None:
+                break
+        if emoji is None:
+            return
+        try:
+            await message.add_reaction(emoji)
+        except discord.HTTPException as exc:
+            log.info("react: couldn't add one (HTTP %s)", exc.status)
+            return
+        self.react_last[message.channel.id] = now
+        log.info("react: added one")
+
     async def remix_source(self, message: discord.Message) -> bytes | None:
         """For imagine.py: one of this server's own pictures to remix, fetched fresh
         (attachment links expire), or None. Only from a channel of this server the
@@ -886,6 +955,7 @@ class Nikobot(commands.Bot):
             log.info("lore off (%s)", self.lore_note)
         if not self.remix_on:
             log.info("remix off (%s)", self.remix_note)
+        log.info("emoji reactions %s", f"on, {self.react_chance:.0%} per message" if self.react_chance else "off")
         for guild in self.guilds:
             log.info(
                 "in guild %s (%s): %s",
@@ -925,6 +995,7 @@ class Nikobot(commands.Bot):
         if message.content.startswith(self.command_prefix):
             await self.process_commands(message)
             return
+        await self.maybe_react(message)  # its own roll, whatever else happens to the message
         if self.addressed(message):
             await self.chat(message)
             return
@@ -1279,6 +1350,9 @@ def main() -> None:
     lore_on, lore_note = lore_config(secrets)
     lore_nsfw, lore_nsfw_note = lore_nsfw_config(secrets, allowed)
     remix_on, remix_note = remix_config(secrets)
+    react_chance, react_note = react_config(secrets)
+    if react_note not in ("ok", "no react_chance", "react_chance is 0"):
+        log.warning("emoji reactions off (%s)", react_note)
     if lore_nsfw_note not in ("ok", "no lore_nsfw_guilds"):
         log.warning("lore: NSFW channels stay out everywhere (%s)", lore_nsfw_note)
     if replies is not None:
@@ -1286,7 +1360,7 @@ def main() -> None:
     else:
         log.info("image replies off (%s)", replies_note)
     Nikobot(allowed, settings, note, chimes, chime_note, replies, lore_on, lore_note, lore_nsfw,
-            remix_on, remix_note).run(
+            remix_on, remix_note, react_chance).run(
         secrets.token, log_handler=None
     )
 
