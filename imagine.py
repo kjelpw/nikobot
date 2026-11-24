@@ -28,6 +28,9 @@ sexualized real people, gore and hate are not. The imagegen service
 at 512x512, without holding the chat model's lock, and it is posted as a WebP
 reply to the same message. It never pings anyone.
 
+An asked-for picture that finds the bot's own job running waits for it ("next
+in line…") instead of being turned away; a random extra never jumps ahead of it.
+
 The box is shared with production, so: one image job at a time, a 10-minute
 cooldown per person, at most 6 an hour, a 10-minute timeout, and the service
 must be idle (its /health) so the bot never queues behind someone else's job.
@@ -189,6 +192,8 @@ class ImageGate:
         self.rng = rng or random.Random()
         self.clock = clock
         self.busy = False
+        self.queued = False  # an asked-for picture is waiting for the slot (wait_turn)
+        self._freed = asyncio.Event()
         self.last: dict[int, float] = {}
         self.started: deque[float] = deque()
 
@@ -206,7 +211,7 @@ class ImageGate:
         """Every limit, cheapest first. On ok, the single job slot is held until end()."""
         if not asked and self.rng.random() >= self.chance:
             return Decision(False, "dice")
-        if self.busy:
+        if self.busy or (self.queued and not asked):  # a random extra never jumps the queue
             return Decision(False, "another image is in progress")
         now = self.clock()
         self._prune(now)
@@ -225,6 +230,26 @@ class ImageGate:
 
     def end(self) -> None:
         self.busy = False
+        self._freed.set()
+
+    async def wait_turn(self, timeout_s: float) -> bool:
+        """For an asked-for picture that found the bot's own job running: wait for it
+        to end (live 2026-11-23: a random extra held the slot ~3.5 min and an
+        explicit ask got "booked solid"). One waiter at a time; True if the slot
+        came free in time."""
+        if self.queued:
+            return False
+        self.queued = True
+        try:
+            async with asyncio.timeout(timeout_s):
+                while self.busy:
+                    self._freed.clear()
+                    await self._freed.wait()
+            return True
+        except TimeoutError:
+            return False
+        finally:
+            self.queued = False
 
 
 # --- the imagegen service -----------------------------------------------------
@@ -610,6 +635,8 @@ def request_text(message, bot_id: int | None) -> str:
 # --- what it says ---------------------------------------------------------------
 
 PAINTING_LINE = "🎨 painting… (~{minutes} min)"
+QUEUED_LINE = "🎨 next in line, after the one I'm painting… (~{minutes} min)"
+QUEUE_WAIT_S = TIMEOUT_S + 60  # the job ahead can run up to TIMEOUT_S
 # the "painting…" message becomes the picture with one of these
 DONE_LINES = (
     "Certainly! 🎨 Behold: a masterpiece. I hope this helps! ✨",
@@ -680,6 +707,12 @@ class Images:
             if not asked and safety.is_serious([request]):
                 return self._skip("serious topic", asked)
             decision = self.gate.begin(message.author.id, asked)
+            if not decision.ok and asked and decision.reason == "another image is in progress":
+                ahead = max(self.estimate_s, self.edit_estimate_s)
+                await out.say(QUEUED_LINE.format(minutes=minutes(ahead * 2)))
+                log.info("image queued (asked): waiting for the image in progress")
+                if await self.gate.wait_turn(QUEUE_WAIT_S):
+                    decision = self.gate.begin(message.author.id, asked)
             if not decision.ok:
                 if decision.reason == "dice":
                     log.debug("image skipped: dice")
