@@ -26,8 +26,9 @@ Rules this file enforces (the owner's, 2026-11-18):
 - Never in DMs: a DM gets no reply and never reaches the model.
 - The remix voice (remix.py, the owner's pick 2026-11-23, when `remix` is on
   in secrets.py): a ping is answered with that server's own chat stitched
-  together, a short line replayed, or a GIF or picture someone posted (from
-  non-NSFW channels only). Crisis language still gets the support line, a
+  together, a short line replayed, or a GIF someone posted. Its pictures are
+  remixes: one of the server's own pictures (non-NSFW channels only), edited
+  by the image model (imagine.py, the owner 2026-11-23). Crisis language still gets the support line, a
   serious-looking ping or a picture request still goes to the LLM. History
   (history.py): two years of each server's chat, every channel the bot can
   read (the owner: "All channels mix"; lore stays public-only), one file per server,
@@ -103,7 +104,8 @@ HUSH_DAYS = 7
 MAX_CHIME_CHANCE = 0.25
 EMBED_WAIT_S = 1.5  # Discord adds a link's embed a moment after the message
 REMIX_DELAY_S = (0.8, 2.5)  # "typing..." before a remix reply, which is instant otherwise
-REMIX_IMAGE_BYTES = 8 * 1024 * 1024  # a replayed picture bigger than this isn't re-sent
+REMIX_IMAGE_BYTES = 8 * 1024 * 1024  # a source picture bigger than this isn't remixed
+REMIX_SOURCE_TRIES = 4  # pictures tried before drawing from scratch (deleted ones, say)
 HISTORY_RETRY_S = 10 * 60  # after a failed history fetch
 HISTORY_TRIES = 20
 SEED_WEEKS = 4  # a fresh lore is seeded from the last 4 weeks of history, a week at a time
@@ -788,15 +790,14 @@ class Nikobot(commands.Bot):
         return current if current is not None and current.ready else None
 
     async def remix_reply(self, message: discord.Message, current: remix.Remix, trigger: persona.Line) -> None:
-        """A ping answered from the server's own chat: a stitched line, a short line, or a reaction."""
+        """A ping answered from the server's own chat: a stitched line, a short line, or a GIF.
+
+        Pictures are never re-posted as they were: they come remixed, through
+        imagine.py (the owner, 2026-11-23: "nikobots images should be remixed images").
+        """
         reply = current.reply(trigger.text, random)
         async with message.channel.typing():
             await asyncio.sleep(random.uniform(*REMIX_DELAY_S))
-        if reply is not None and reply.kind == "image":
-            if await self.send_remix_image(message, reply.image):
-                log.info("chat: remix picture")
-                return
-            reply = current.reply(trigger.text, random, reactions=False)
         text = reply.text if reply is not None else None
         if not text or safety.has_slur(text):  # the lines are filtered going in; this is belt and braces
             reply = current.reply(None, random, reactions=False)
@@ -810,34 +811,38 @@ class Nikobot(commands.Bot):
         if self.image_replies is not None and reply.kind != "gif":  # now and then a drawn picture too (#29)
             await self.image_replies.follow_up(self, message, [trigger], text, reply_msg=sent)
 
-    async def send_remix_image(self, message: discord.Message, ref: tuple[int, int] | None) -> bool:
-        """Re-post a picture someone posted in this server, fetched fresh (links expire).
-
-        Only from a channel of this server the bot can still read that isn't NSFW, never a spoiler.
-        """
-        if ref is None:
-            return False
+    async def remix_source(self, message: discord.Message) -> bytes | None:
+        """For imagine.py: one of this server's own pictures to remix, fetched fresh
+        (attachment links expire), or None. Only from a channel of this server the
+        bot can still read that isn't NSFW, never a spoiler, at most 8 MB."""
         guild = message.guild
-        source = guild.get_channel_or_thread(ref[0])
-        if source is None or not remix_channel(source, guild.me, False):
-            return False
-        try:
-            original = await source.fetch_message(ref[1])
-            picture = next(
-                (a for a in original.attachments
-                 if (a.content_type or "").startswith("image/") and a.size <= REMIX_IMAGE_BYTES and not a.is_spoiler()),
-                None,
-            )
-            if picture is None:
-                return False
-            file = await picture.to_file()
-            await message.channel.send(
-                file=file, reference=message.to_reference(fail_if_not_exists=False),
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except (discord.HTTPException, OSError):
-            return False
-        return True
+        current = self.remixes.get(guild.id) if guild is not None else None
+        if not self.remix_on or current is None or not current.images:
+            return None
+        for _ in range(REMIX_SOURCE_TRIES):
+            channel_id, message_id = random.choice(current.images)
+            source = guild.get_channel_or_thread(channel_id)
+            if source is None or not remix_channel(source, guild.me, False):
+                continue
+            try:
+                original = await source.fetch_message(message_id)
+                picture = next(
+                    (a for a in original.attachments
+                     if (a.content_type or "").startswith("image/") and a.size <= REMIX_IMAGE_BYTES
+                     and not a.is_spoiler()),
+                    None,
+                )
+                if picture is not None:
+                    return await picture.read()
+            except (discord.HTTPException, OSError):
+                continue
+        return None
+
+    async def describe_picture(self, data: bytes) -> str | None:
+        """For imagine.py: a caption of a remix source, so its instruction fits the picture."""
+        if self.captioner is None:
+            return None
+        return await self.captioner.describe_bytes(data, imagine.CAPTION_BUDGET_S)
 
     async def close(self) -> None:
         if self.history_task is not None:

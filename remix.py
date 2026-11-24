@@ -11,8 +11,10 @@ Three kinds of reply, all from one server's history (history.py), never another'
 - stitch: a real line that jumps into another real line at a shared word,
   one to three times. It ends where the last line ended, so it ends naturally.
 - replay: a short real line, as is.
-- reaction: a GIF link or a picture someone posted, only from non-NSFW
-  channels. Pictures are fetched again when sent (attachment links expire).
+- reaction: a GIF link someone posted, from a non-NSFW channel.
+Pictures are never re-posted as they were. The server's pictures (non-NSFW
+channels only) are kept as sources for imagine.py, which remixes one with the
+image model (the owner, 2026-11-23: "nikobots images should be remixed images").
 
 What goes in (clean_line): no bots, no commands, nothing that hits the
 serious-topic list, the crisis list or the slur filter, no emails or
@@ -50,10 +52,8 @@ MIN_LINES = 200  # fewer: not ready, the LLM answers instead
 MAX_LINE_WORDS = 40
 MAX_WORDS = 30  # a stitched reply's cap (cutebot's long one was ~35)
 SHORT_WORDS = 8  # a replay is at most this long
-REACTION_TEXT_WORDS = 3  # a picture counts as a reaction pic if its message says little
-# Fewer GIFs and pictures than this: no reactions, or the same one keeps coming
-# back (live 2026-11-23: Ⅶ's chat is mostly in NSFW channels, which give no
-# reactions, so it had one picture in two years).
+# Fewer GIFs than this: no reactions, or the same one keeps coming back (live
+# 2026-11-23: Ⅶ had one reaction picture in two years and 4 GIFs).
 MIN_REACTIONS = 20
 MAX_SPLICES = 3
 TRIES = 8
@@ -113,9 +113,8 @@ def clean_line(content: str | None, names: dict[int, str] | None = None) -> str:
 
 @dataclass(frozen=True)
 class Reply:
-    kind: str  # "stitch", "replay", "gif" or "image"
+    kind: str  # "stitch", "replay" or "gif"
     text: str | None = None
-    image: tuple[int, int] | None = None  # (channel id, message id) to fetch the picture from
 
 
 @dataclass
@@ -127,7 +126,7 @@ class Remix:
     index: dict[str, array] = field(default_factory=dict)
     short: array = field(default_factory=lambda: array("I"))  # ids of replayable lines
     gifs: list[str] = field(default_factory=list)
-    images: list[tuple[int, int]] = field(default_factory=list)
+    images: list[tuple[int, int]] = field(default_factory=list)  # (channel, message): remix sources
 
     @property
     def ready(self) -> bool:
@@ -154,7 +153,6 @@ class Remix:
         used = False
         pictures = [u for u in record.get("attachments") or () if isinstance(u, str) and _IMAGE_URL.search(u)]
         if (pictures and record.get("id") and not record.get("nsfw")
-                and len(content.split()) <= REACTION_TEXT_WORDS
                 and (not content.strip() or clean_line(content, names))):
             self.images.append((int(record["channel_id"]), int(record["id"])))
             used = True
@@ -216,10 +214,8 @@ class Remix:
         if not self.ready:
             return None
         roll = rng.random()
-        if reactions and roll < REACTION_SHARE and len(self.gifs) + len(self.images) >= MIN_REACTIONS:
-            pool = rng.choice([p for p in (self.gifs, self.images) if p])
-            pick = rng.choice(pool)
-            return Reply("gif", text=pick) if isinstance(pick, str) else Reply("image", image=pick)
+        if reactions and roll < REACTION_SHARE and len(self.gifs) >= MIN_REACTIONS:
+            return Reply("gif", text=rng.choice(self.gifs))
         topic = self.topic(ping, rng) if rng.random() < TOPIC_SHARE else None
         if roll < REACTION_SHARE + REPLAY_SHARE:
             text = self.replay(topic, rng)

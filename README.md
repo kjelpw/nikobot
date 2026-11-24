@@ -253,6 +253,21 @@ The owner's ask (2026-11-19): "It should also be able to respond with generated
 images, sometimes, or if asked for it." Pictures come from the homelab's
 `imagegen` service (Qwen-Image-2.1 Turbo on the CPU), at 512×512.
 
+**Remixed pictures** (the owner, 2026-11-23: "I think nikobots images should be
+remixed images instead"). With the remix voice on, a picture starts from one
+of that server's own pictures (from its history, non-NSFW channels only, never
+a spoiler, at most 8 MB, fetched fresh from Discord) and the image model
+edits it (`/v1/images/edits`) instead of drawing from nothing:
+
+- The small vision model captions the source first, so the chat model (which
+  can't see pictures) writes a change that fits it: something absurd put in,
+  something swapped, a new place or a named style. PG-13, as below.
+- The checks judge the change together with the caption, so a source that
+  already looks explicit isn't remixed.
+- No pictures in the server's history (or none it can still fetch): drawn from
+  scratch as before. Logs say "remix" or "from scratch", never the caption or
+  the instruction.
+
 - **When asked.** A ping that asks for a picture gets one: "draw me…", "paint
   a…", "can you sketch…", "make/generate/create an image/picture/pic/meme of…",
   "show me a picture of…", "send a selfie". It's a regex (`imagine.wants_image`),
@@ -303,11 +318,11 @@ history. With `remix = True` in `secrets.py`:
   - *stitch* (most): a real line that jumps into another real line at a
     shared word, one to three times, at most 30 words;
   - *replay* (28%): a short real line as is;
-  - *reaction* (12%): a GIF link or a picture someone posted. Never spoilers, at most
-    8 MB, fetched fresh from Discord when sent (attachment links expire).
-    Pictures only come from channels that aren't NSFW, and reactions are only
-    used once a server has at least 20 to pick from (or the same one keeps
-    coming back).
+  - *reaction* (12%): a GIF link someone posted in a non-NSFW channel, only
+    once a server has at least 20 to pick from (or the same one keeps coming
+    back).
+  Pictures are never re-posted as they were: the bot's pictures are remixes
+  of them (see [Image replies](#image-replies)).
   Half the time it starts from an uncommon word in the ping, so a reply can
   land near the topic.
 - **What still goes to the LLM:** a ping that asks for a picture (imagine.py),

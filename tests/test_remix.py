@@ -75,7 +75,7 @@ def test_build_takes_only_this_servers_people(monkeypatch):
     assert not any("secret" in ln for ln in remix.Remix.build(records, HOME, nsfw_ok=True).lines)
 
 
-def test_reactions_come_only_from_sfw_channels():
+def test_gifs_and_remix_sources_come_only_from_sfw_channels():
     pic = ["https://cdn.discordapp.com/attachments/1/2/cat.png?ex=1"]
     records = [rec(1, "https://tenor.com/view/a-1"), rec(2, "https://tenor.com/view/b-2", nsfw=True),
                rec(3, "", attachments=pic), rec(4, "lol", attachments=pic, nsfw=True),
@@ -83,7 +83,8 @@ def test_reactions_come_only_from_sfw_channels():
                rec(6, "", attachments=["https://cdn.discordapp.com/attachments/1/2/notes.txt"])]
     built = remix.Remix.build(records, HOME, nsfw_ok=True)
     assert built.gifs == ["https://tenor.com/view/a-1"]
-    assert built.images == [(5, 3)]  # (channel, message): fetched fresh when sent
+    # (channel, message): remix sources, fetched fresh when used; any SFW picture
+    assert sorted(built.images) == [(5, 3), (5, 5)]
     assert "here is a long story about my day at work" in built.lines  # its text is still a line
 
 
@@ -185,12 +186,20 @@ def test_chime_ins_from_remix_still_go_through_every_check():
     assert src.index("current.reply(") < src.index("safety.has_slur(text)") < src.index("self.reply_clears(text)")
 
 
-def test_replayed_pictures_come_only_from_sfw_channels():
-    src = inspect.getsource(bot.Nikobot.send_remix_image)
+def test_pictures_are_never_reposted_only_remixed():
+    # the owner, 2026-11-23: "nikobots images should be remixed images instead"
+    assert not hasattr(bot.Nikobot, "send_remix_image")
+    assert "image" not in inspect.getsource(remix.Remix.reply).replace("self.images", "")
+    src = inspect.getsource(bot.Nikobot.remix_source)
     assert "remix_channel(source, guild.me, False)" in src  # never from an NSFW channel
     assert "not a.is_spoiler()" in src and "REMIX_IMAGE_BYTES" in src
-    assert "guild.get_channel_or_thread(" in src  # this server's channels only
-    assert "AllowedMentions.none()" in src
+    assert "self.remixes.get(guild.id)" in src and "guild.get_channel_or_thread(" in src  # this server's only
+
+
+def test_a_server_picture_is_a_remix_source_and_the_rest_is_text(small):
+    small.images.extend((5, i) for i in range(500))  # plenty of pictures: still never a reaction
+    rng = random.Random(9)
+    assert {small.reply("hi", rng).kind for _ in range(300)} <= {"stitch", "replay"}
 
 
 def test_remix_reads_every_channel_the_bot_can_but_nsfw_only_where_allowed():
