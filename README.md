@@ -320,8 +320,11 @@ history. With `remix = True` in `secrets.py`:
   - *replay* (28%): a short real line as is;
   - *reaction* (12%): a GIF link someone posted (from NSFW channels too, in
     `lore_nsfw_guilds`: they're public Tenor/GIPHY links), only once a server
-    has at least 20 to pick from (or the same one keeps coming back). There's
-    no GIF search: Google shut Tenor's public API down on 2026-06-30.
+    has at least 20 to pick from (or the same one keeps coming back). Tenor,
+    GIPHY and Klipy links all count (Discord's GIF picker posts Klipy links
+    since 2026). There's no GIF search: Tenor's public API shut down on
+    2026-06-30, and Klipy's terms need written approval for a bot's
+    server-side requests.
   Pictures are never re-posted as they were: the bot's pictures are remixes
   of them (see [Image replies](#image-replies)).
   Half the time it starts from an uncommon word in the ping, so a reply can
