@@ -185,19 +185,41 @@ def test_chime_ins_from_remix_still_go_through_every_check():
     assert src.index("current.reply(") < src.index("safety.has_slur(text)") < src.index("self.reply_clears(text)")
 
 
-def test_replayed_pictures_come_only_from_public_sfw_channels():
+def test_replayed_pictures_come_only_from_sfw_channels():
     src = inspect.getsource(bot.Nikobot.send_remix_image)
-    assert "lore_channel(source, guild.default_role, False)" in src
+    assert "remix_channel(source, guild.me, False)" in src  # never from an NSFW channel
     assert "not a.is_spoiler()" in src and "REMIX_IMAGE_BYTES" in src
     assert "guild.get_channel_or_thread(" in src  # this server's channels only
     assert "AllowedMentions.none()" in src
 
 
-def test_history_uses_lores_fence_and_only_this_server():
+def test_remix_reads_every_channel_the_bot_can_but_nsfw_only_where_allowed():
+    # the owner, 2026-11-23: "All channels mix"
+    import discord
+    me = object()
+
+    def channel(nsfw=False, view=True, history=True, kind=discord.ChannelType.text, broken=False):
+        def permissions_for(member):
+            assert member is me
+            if broken:
+                raise AttributeError("no parent")
+            return SimpleNamespace(view_channel=view, read_message_history=history)
+        return SimpleNamespace(is_nsfw=lambda: nsfw, permissions_for=permissions_for, type=kind)
+
+    assert bot.remix_channel(channel(), me)  # role-gated or private: what counts is the bot can read it
+    assert not bot.remix_channel(channel(view=False), me)
+    assert not bot.remix_channel(channel(history=False), me)
+    assert not bot.remix_channel(channel(nsfw=True), me)
+    assert bot.remix_channel(channel(nsfw=True), me, nsfw_ok=True)
+    assert not bot.remix_channel(channel(kind=discord.ChannelType.private_thread), me, nsfw_ok=True)
+    assert not bot.remix_channel(channel(broken=True), me)
+
+
+def test_history_uses_the_remix_fence_and_only_this_server():
     src = inspect.getsource(bot.Nikobot.history_channels)
-    assert "lore_channel(channel, guild.default_role, nsfw_ok)" in src and "read_message_history" in src
+    assert "remix_channel(channel, guild.me, nsfw_ok)" in src
     keep = inspect.getsource(bot.Nikobot.remember)
-    assert "lore_channel(message.channel, guild.default_role, nsfw_ok)" in keep
+    assert "remix_channel(message.channel, guild.me, nsfw_ok)" in keep
     assert "history.keep(rec, guild.id)" in keep and "history.corpus_path(DATA_DIR, guild.id)" in keep
     run = inspect.getsource(bot.Nikobot.history_for)
     assert "message_dict, guild_id" in run
@@ -224,3 +246,15 @@ def test_too_few_reactions_means_none(small):
     small.images.append((5, 1))
     rng = random.Random(8)
     assert {small.reply("hi", rng).kind for _ in range(300)} <= {"stitch", "replay"}
+
+
+def test_each_start_fetches_channels_it_hasnt_finished():
+    src = inspect.getsource(bot.Nikobot.history_for)
+    assert "while not state.done" not in src  # a finished server still picks up new channels
+    assert "state.count > had" in src  # and the remix is rebuilt only when something came in
+
+
+def test_lore_keeps_its_public_fence():
+    seed = inspect.getsource(bot.Nikobot.seed_lore)
+    assert "self.lore_channels(guild_id)" in seed
+    assert "lore_channel(channel, guild.default_role, nsfw_ok)" in inspect.getsource(bot.Nikobot.lore_channels)

@@ -303,9 +303,11 @@ history. With `remix = True` in `secrets.py`:
   - *stitch* (most): a real line that jumps into another real line at a
     shared word, one to three times, at most 30 words;
   - *replay* (28%): a short real line as is;
-  - *reaction* (12%): a GIF link or a picture someone posted. Pictures only
-    come from channels that are public and not NSFW, never spoilers, at most
+  - *reaction* (12%): a GIF link or a picture someone posted. Never spoilers, at most
     8 MB, fetched fresh from Discord when sent (attachment links expire).
+    Pictures only come from channels that aren't NSFW, and reactions are only
+    used once a server has at least 20 to pick from (or the same one keeps
+    coming back).
   Half the time it starts from an uncommon word in the ping, so a reply can
   land near the topic.
 - **What still goes to the LLM:** a ping that asks for a picture (imagine.py),
@@ -314,15 +316,19 @@ history. With `remix = True` in `secrets.py`:
   has 200 lines (the history is still being fetched), its pings get the LLM
   voice as before.
 - **What goes in:** people's messages only (no bots, this one included, and no
-  webhooks), from channels everyone in the server can read, NSFW ones only in
-  `lore_nsfw_guilds`. Dropped: commands, code blocks, emails and phone-like
+  webhooks), from every channel of that server the bot can read, role-gated
+  and private ones included (the owner, 2026-11-23: "All channels mix"), so a
+  reply in a public channel can carry lines from a members-only one. NSFW
+  channels only in `lore_nsfw_guilds`; never private threads. Dropped: commands, code blocks, emails and phone-like
   numbers, and anything that hits the serious-topic list, the crisis list or
   the slur filter. Mentions become plain names (a bot's mention is dropped),
   links go, the server's custom emoji stay. Nobody is ever pinged.
-- **History** (`history.py`): the last two years of each server, fetched once
-  in the background, newest first, channel by channel, into
+- **History** (`history.py`): the last two years of each server, fetched in
+  the background, newest first, channel by channel, into
   `/data/history-<server id>.jsonl`, with progress in
-  `history-<server id>.state.json` so a restart carries on. New messages are
+  `history-<server id>.state.json` so a restart carries on. Each start only
+  fetches channels it hasn't finished (new ones, or newly allowed ones). Lore
+  still only reads the channels everyone in the server can see. New messages are
   appended live. A server's file only ever holds that server's messages, and
   every read checks the server again. At most the newest 60,000 lines per
   server are loaded (the container has 256 MB).

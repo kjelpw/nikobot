@@ -29,7 +29,8 @@ Rules this file enforces (the owner's, 2026-11-18):
   together, a short line replayed, or a GIF or picture someone posted (from
   non-NSFW channels only). Crisis language still gets the support line, a
   serious-looking ping or a picture request still goes to the LLM. History
-  (history.py): two years of each server's public chat, one file per server,
+  (history.py): two years of each server's chat, every channel the bot can
+  read (the owner: "All channels mix"; lore stays public-only), one file per server,
   fetched once in the background and kept up to date live; it never mixes
   servers.
 - It logs every message it sees (DMs included) to /data/messages.log*, as
@@ -313,6 +314,25 @@ def lore_channel(channel, everyone, nsfw_ok: bool = False) -> bool:
     try:
         return bool(channel.permissions_for(everyone).view_channel)
     except Exception:  # noqa: BLE001 - categories, missing parents: not learnable
+        return False
+
+
+def remix_channel(channel, me, nsfw_ok: bool = False) -> bool:
+    """A channel the remix and its history may learn from: any the bot can read.
+
+    The owner, 2026-11-23, asked which channels: "All channels mix", role-gated
+    and private ones included (lore keeps its public-only fence). Still never
+    another server's, NSFW ones only in lore_nsfw_guilds (the owner: "nsfw
+    channels in VII are ok, not in other servers"), never a private thread.
+    """
+    if getattr(channel, "type", None) == discord.ChannelType.private_thread:
+        return False
+    if channel_nsfw(channel) and not nsfw_ok:
+        return False
+    try:
+        perms = channel.permissions_for(me)
+        return bool(perms.view_channel and perms.read_message_history)
+    except Exception:  # noqa: BLE001 - categories, missing parents: not readable
         return False
 
 
@@ -677,19 +697,12 @@ class Nikobot(commands.Bot):
     # --- history: two years of each server's chat (history.py) -------------------
 
     def history_channels(self, guild: discord.Guild) -> list:
-        """The channels to fetch history from: lore's fence, and readable history."""
+        """The channels to fetch history from: every one the bot can read (remix_channel)."""
         nsfw_ok = guild.id in self.lore_nsfw_guilds
-        found = []
-        for channel in [*guild.text_channels, *guild.voice_channels, *guild.stage_channels, *guild.threads]:
-            if not lore_channel(channel, guild.default_role, nsfw_ok):
-                continue
-            try:
-                if not channel.permissions_for(guild.me).read_message_history:
-                    continue
-            except Exception:  # noqa: BLE001 - a missing parent and the like
-                continue
-            found.append(channel)
-        return found
+        return [
+            channel for channel in [*guild.text_channels, *guild.voice_channels, *guild.stage_channels, *guild.threads]
+            if remix_channel(channel, guild.me, nsfw_ok)
+        ]
 
     async def run_history(self) -> None:
         """Per server, one at a time: load its remix, fetch any history still missing, then
@@ -709,10 +722,12 @@ class Nikobot(commands.Bot):
         state = history.BackfillState.load(history.state_path(DATA_DIR, guild_id))
         if self.remix_on:
             await self.load_remix(guild_id)
+        # Every start: finished channels cost nothing, and a channel the bot
+        # can newly read (a new channel, a wider fence) gets its two years.
         tries = 0
-        while not state.done and tries < HISTORY_TRIES:
+        while tries < HISTORY_TRIES:
             tries += 1
-            started, since = time.monotonic(), history.cutoff()
+            started, since, had = time.monotonic(), history.cutoff(), state.count
             outcomes = []
             for channel in self.history_channels(guild):
                 outcomes.append(await history.backfill_channel(
@@ -726,11 +741,12 @@ class Nikobot(commands.Bot):
                 continue
             state.done = True
             state.save()
-            log.info("history: guild %s: done, %d message(s) from %d channel(s) in %.0f min (%d skipped)",
-                     guild_id, state.count, len(outcomes), (time.monotonic() - started) / 60,
+            log.info("history: guild %s: %d new message(s), %d in all, from %d channel(s) in %.0f min (%d skipped)",
+                     guild_id, state.count - had, state.count, len(outcomes), (time.monotonic() - started) / 60,
                      outcomes.count("forbidden"))
-            if self.remix_on:
+            if self.remix_on and state.count > had:
                 await self.load_remix(guild_id)
+            break
         await self.seed_lore(guild_id)
 
     async def load_remix(self, guild_id: int) -> None:
@@ -797,13 +813,13 @@ class Nikobot(commands.Bot):
     async def send_remix_image(self, message: discord.Message, ref: tuple[int, int] | None) -> bool:
         """Re-post a picture someone posted in this server, fetched fresh (links expire).
 
-        Only from a channel that is still public and not NSFW, never a spoiler.
+        Only from a channel of this server the bot can still read that isn't NSFW, never a spoiler.
         """
         if ref is None:
             return False
         guild = message.guild
         source = guild.get_channel_or_thread(ref[0])
-        if source is None or not lore_channel(source, guild.default_role, False):
+        if source is None or not remix_channel(source, guild.me, False):
             return False
         try:
             original = await source.fetch_message(ref[1])
@@ -916,7 +932,7 @@ class Nikobot(commands.Bot):
             return
         guild = message.guild
         nsfw_ok = guild.id in self.lore_nsfw_guilds
-        if message.type not in CHAT_TYPES or not lore_channel(message.channel, guild.default_role, nsfw_ok):
+        if message.type not in CHAT_TYPES or not remix_channel(message.channel, guild.me, nsfw_ok):
             return
         try:
             rec = message_dict(message)
