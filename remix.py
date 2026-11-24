@@ -51,6 +51,10 @@ MAX_LINE_WORDS = 40
 MAX_WORDS = 30  # a stitched reply's cap (cutebot's long one was ~35)
 SHORT_WORDS = 8  # a replay is at most this long
 REACTION_TEXT_WORDS = 3  # a picture counts as a reaction pic if its message says little
+# Fewer GIFs and pictures than this: no reactions, or the same one keeps coming
+# back (live 2026-11-23: Ⅶ's chat is mostly in NSFW channels, which give no
+# reactions, so it had one picture in two years).
+MIN_REACTIONS = 20
 MAX_SPLICES = 3
 TRIES = 8
 COMMON_SHARE = 0.02  # a ping word in more lines than this is too common to be a topic
@@ -212,7 +216,7 @@ class Remix:
         if not self.ready:
             return None
         roll = rng.random()
-        if reactions and roll < REACTION_SHARE and (self.gifs or self.images):
+        if reactions and roll < REACTION_SHARE and len(self.gifs) + len(self.images) >= MIN_REACTIONS:
             pool = rng.choice([p for p in (self.gifs, self.images) if p])
             pick = rng.choice(pool)
             return Reply("gif", text=pick) if isinstance(pick, str) else Reply("image", image=pick)

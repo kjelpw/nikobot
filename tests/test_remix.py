@@ -121,7 +121,7 @@ def test_a_ping_word_can_steer_it(small):
 
 
 def test_reply_mixes_kinds_and_chime_ins_get_text_only(small):
-    small.gifs.append("https://tenor.com/view/x-1")
+    small.gifs.extend(f"https://tenor.com/view/x-{i}" for i in range(remix.MIN_REACTIONS))
     rng = random.Random(6)
     kinds = {small.reply("hello there", rng).kind for _ in range(300)}
     assert {"stitch", "replay", "gif"} <= kinds
@@ -217,3 +217,10 @@ def test_the_image_copies_every_module():
                       if ln.startswith("COPY bot.py")).split()[1:-1])
     modules = {p.name for p in root.glob("*.py")}
     assert modules <= copied, modules - copied
+
+
+def test_too_few_reactions_means_none(small):
+    # live 2026-11-23: one picture in two years would have come back every time
+    small.images.append((5, 1))
+    rng = random.Random(8)
+    assert {small.reply("hi", rng).kind for _ in range(300)} <= {"stitch", "replay"}
