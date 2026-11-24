@@ -11,7 +11,7 @@ Three kinds of reply, all from one server's history (history.py), never another'
 - stitch: a real line that jumps into another real line at a shared word,
   one to three times. It ends where the last line ended, so it ends naturally.
 - replay: a short real line, as is.
-- reaction: a GIF link someone posted, from a non-NSFW channel.
+- reaction: a GIF link someone posted (from NSFW channels too, where they're allowed).
 Pictures are never re-posted as they were. The server's pictures (non-NSFW
 channels only) are kept as sources for imagine.py, which remixes one with the
 image model (the owner, 2026-11-23: "nikobots images should be remixed images").
@@ -147,9 +147,11 @@ class Remix:
         content = record.get("content") or ""
         gif = gif_link(content)
         if gif is not None:
-            if not record.get("nsfw"):
-                self.gifs.append(gif)
-            return not record.get("nsfw")
+            # A GIF link is public Tenor/GIPHY content, so it counts wherever chat
+            # does (NSFW channels only where allowed: usable() above). Ⅶ's chat is
+            # nearly all in NSFW channels: 281 GIF links there, 4 elsewhere (2026-11-23).
+            self.gifs.append(gif)
+            return True
         used = False
         pictures = [u for u in record.get("attachments") or () if isinstance(u, str) and _IMAGE_URL.search(u)]
         if (pictures and record.get("id") and not record.get("nsfw")

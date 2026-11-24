@@ -75,14 +75,16 @@ def test_build_takes_only_this_servers_people(monkeypatch):
     assert not any("secret" in ln for ln in remix.Remix.build(records, HOME, nsfw_ok=True).lines)
 
 
-def test_gifs_and_remix_sources_come_only_from_sfw_channels():
+def test_gifs_follow_the_nsfw_rule_and_remix_sources_are_sfw_only():
     pic = ["https://cdn.discordapp.com/attachments/1/2/cat.png?ex=1"]
     records = [rec(1, "https://tenor.com/view/a-1"), rec(2, "https://tenor.com/view/b-2", nsfw=True),
                rec(3, "", attachments=pic), rec(4, "lol", attachments=pic, nsfw=True),
                rec(5, "here is a long story about my day at work", attachments=pic),
                rec(6, "", attachments=["https://cdn.discordapp.com/attachments/1/2/notes.txt"])]
+    assert remix.Remix.build(records, HOME).gifs == ["https://tenor.com/view/a-1"]
     built = remix.Remix.build(records, HOME, nsfw_ok=True)
-    assert built.gifs == ["https://tenor.com/view/a-1"]
+    # GIF links count from NSFW channels where those are allowed; friends' pictures never do
+    assert built.gifs == ["https://tenor.com/view/a-1", "https://tenor.com/view/b-2"]
     # (channel, message): remix sources, fetched fresh when used; any SFW picture
     assert sorted(built.images) == [(5, 3), (5, 5)]
     assert "here is a long story about my day at work" in built.lines  # its text is still a line
