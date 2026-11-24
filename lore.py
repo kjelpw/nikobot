@@ -9,7 +9,9 @@ flavor, never as rules (persona.build_chat_messages(lore=...)), so the bot feels
 like a regular in the server instead of a stateless joke machine.
 
 - What it reads: messages from the owner's servers only, in channels everyone
-  there can read that aren't NSFW. Never DMs, never anything that hits the
+  there can read that aren't NSFW (NSFW ones too in the servers listed in
+  lore_nsfw_guilds: the owner, 2026-11-23, "nsfw channels in VII are ok, not in
+  other servers"). Never DMs, never anything that hits the
   serious-topic list, the crisis list or the slur filter, never commands. The
   bot's own replies are kept (its catchphrases live there), but its fixed lines
   (canned errors, go-live posts, !ip, ...) are not. At most 250 messages and
@@ -228,14 +230,18 @@ def _name(rec: dict) -> str:
 
 
 def left_out_reason(rec: dict, allowed: frozenset[int], bot_id: int | None,
-                    channels: frozenset[int] | None) -> str | None:
-    """Why a record can't be learned from, judged before its text is cleaned."""
+                    channels: frozenset[int] | None, nsfw_ok: bool = False) -> str | None:
+    """Why a record can't be learned from, judged before its text is cleaned.
+
+    nsfw_ok is for one server's update only (bot.lore_update), so the server
+    check above it still keeps every other server's messages out.
+    """
     guild_id = rec.get("guild_id")
     if guild_id is None:
         return "dm"
     if guild_id not in allowed:
         return "other server"
-    if rec.get("nsfw"):
+    if rec.get("nsfw") and not nsfw_ok:
         return "nsfw"
     if channels is not None and rec.get("channel_id") not in channels:
         return "channel"
@@ -253,17 +259,18 @@ def left_out_reason(rec: dict, allowed: frozenset[int], bot_id: int | None,
 
 
 def select_chat(records: list[dict], allowed: frozenset[int], bot_id: int | None,
-                channels: frozenset[int] | None = None) -> Chat:
+                channels: frozenset[int] | None = None, nsfw_ok: bool = False) -> Chat:
     """The usable messages, newest first up to the caps, returned oldest first.
 
-    `channels` is the set of channels the lore may learn from (public, not
-    NSFW); None means no channel filter (the live trial, which has no Discord).
+    `channels` is the set of channels the lore may learn from (public, and not
+    NSFW unless nsfw_ok); None means no channel filter (the live trial, which
+    has no Discord).
     """
     chat = Chat(read=len(records))
     names = {rec.get("author_id"): _name(rec) for rec in reversed(records) if rec.get("author_id") is not None}
     picked: list[tuple[str, persona.Line]] = []
     for rec in records:  # newest first
-        reason = left_out_reason(rec, allowed, bot_id, channels)
+        reason = left_out_reason(rec, allowed, bot_id, channels, nsfw_ok)
         text = ""
         if reason is None:
             text = persona.strip_links(persona.clean_text(rec["content"], bot_id, names))
@@ -292,12 +299,12 @@ def select_chat(records: list[dict], allowed: frozenset[int], bot_id: int | None
 
 def read_chat(directory: Path, now: datetime, allowed: frozenset[int], bot_id: int | None,
               channels: frozenset[int] | None = None, since: datetime | None = None,
-              backups: int = 10) -> Chat:
+              backups: int = 10, nsfw_ok: bool = False) -> Chat:
     """The last 24 hours of usable chat (or since `since`, if later: a !forget)."""
     start = now - WINDOW
     if since is not None and since > start:
         start = since
-    return select_chat(read_records(directory, start, backups), allowed, bot_id, channels)
+    return select_chat(read_records(directory, start, backups), allowed, bot_id, channels, nsfw_ok)
 
 
 def transcript(chat: Chat) -> str:

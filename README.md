@@ -187,6 +187,8 @@ read-only, by default at `/app/secrets.py`. It defines:
 | `twitch_client_id`, `twitch_client_secret` | the Twitch application's credentials |
 | `image_chance` | optional: the chance that a ping reply comes with an unasked image (default `0.05`, at most `0.25`; `0` means only when asked) |
 | `evolve` | optional: `True` turns on [lore](#lore-an-evolving-personality), the daily running jokes. Off when unset |
+| `remix` | optional: `True` turns on the [remix voice](#remix-voice-the-servers-own-chat) and the two-year history it's built from. Off when unset |
+| `lore_nsfw_guilds` | optional: list of server IDs whose lore also reads their NSFW channels. Unset means no NSFW anywhere; a server that isn't one of the two above turns it off for all |
 
 Go-live posts stay off until all four of the last settings are filled in. The
 startup log says which are missing.
@@ -288,6 +290,51 @@ images, sometimes, or if asked for it." Pictures come from the homelab's
 - **Turning it off:** `image_chance = 0` in `secrets.py` stops the unasked ones;
   an empty `IMAGEGEN_URL` stops all of them. The startup log says which.
 
+## Remix voice (the server's own chat)
+
+The owner, 2026-11-23: the LLM's jokes came off "as cringe reddit millenial
+rather than actually funny", next to a friend's bot (cutebot) whose replies
+are the server's own chat remixed: "never taunt me....im sensitive 👉👈", a
+replayed cat picture, a stitched-up run-on about input lag and feet. The owner
+picked "remix the server's chat" over retuning the LLM, with two years of
+history. With `remix = True` in `secrets.py`:
+
+- **A ping is answered from that server's chat** (`remix.py`), one of:
+  - *stitch* (most): a real line that jumps into another real line at a
+    shared word, one to three times, at most 30 words;
+  - *replay* (28%): a short real line as is;
+  - *reaction* (12%): a GIF link or a picture someone posted. Pictures only
+    come from channels that are public and not NSFW, never spoilers, at most
+    8 MB, fetched fresh from Discord when sent (attachment links expire).
+  Half the time it starts from an uncommon word in the ping, so a reply can
+  land near the topic.
+- **What still goes to the LLM:** a ping that asks for a picture (imagine.py),
+  and a serious-looking ping (the plain "I'm only a joke bot" answer). Crisis
+  language still gets the fixed support line first. Until a server's remix
+  has 200 lines (the history is still being fetched), its pings get the LLM
+  voice as before.
+- **What goes in:** people's messages only (no bots, this one included, and no
+  webhooks), from channels everyone in the server can read, NSFW ones only in
+  `lore_nsfw_guilds`. Dropped: commands, code blocks, emails and phone-like
+  numbers, and anything that hits the serious-topic list, the crisis list or
+  the slur filter. Mentions become plain names (a bot's mention is dropped),
+  links go, the server's custom emoji stay. Nobody is ever pinged.
+- **History** (`history.py`): the last two years of each server, fetched once
+  in the background, newest first, channel by channel, into
+  `/data/history-<server id>.jsonl`, with progress in
+  `history-<server id>.state.json` so a restart carries on. New messages are
+  appended live. A server's file only ever holds that server's messages, and
+  every read checks the server again. At most the newest 60,000 lines per
+  server are loaded (the container has 256 MB).
+- **Chime-ins** use the remix too (text only), and still need the full reply
+  check before they post.
+- **Lore seed:** a lore that was never updated (or wiped) is seeded from the
+  last four weeks of history once it's fetched, a week at a time, oldest
+  first, each pass an ordinary lore update.
+- **Turning it off:** remove `remix` from `secrets.py` (or set it to `False`)
+  and restart; the LLM voice comes back. Deleting the `history-*` files
+  removes the history; with `remix` on, it's fetched again.
+
 ## Lore (an evolving personality)
 
 The owner's ask (2026-11-19): "Can nikobots personality evolve over time?" With
@@ -308,7 +355,10 @@ call back to yesterday's joke like a regular would.
 - **What it reads.** The last 24 hours of `/data/messages.log*`, from the
   owner's servers only, in channels everyone in the server can read that
   aren't NSFW (checked against Discord at update time, since the lore turns up
-  in every channel). Never DMs, commands, or anything that hits the
+  in every channel). NSFW channels count too in the servers listed in
+  `lore_nsfw_guilds` (the owner, 2026-11-23: "nsfw channels in VII are ok, not
+  in other servers"), so in those servers a running joke from an NSFW channel
+  can come up in any channel and in `!lore`. Never DMs, commands, or anything that hits the
   serious-topic list, the crisis list or the slur filter. The bot's own replies
   are kept (trimmed to 120 characters), its fixed lines (canned errors, go-live
   posts, `!ip`) are not. At most 250 messages and 12k characters, newest first,
