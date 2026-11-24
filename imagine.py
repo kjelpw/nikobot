@@ -1,6 +1,15 @@
 """Image replies (the owner's ask, 2026-11-19): "It should also be able to
 respond with generated images, sometimes, or if asked for it."
 
+Remixed pictures (the owner, 2026-11-23: "I think nikobots images should be
+remixed images instead"): when the server has pictures in its history
+(remix.py), a picture starts from one of them, fetched fresh from Discord, and
+the image model edits it (/v1/images/edits) instead of drawing from nothing.
+The small vision model captions it first, so the instruction writer (the chat
+model, which can't see pictures) knows what's in it. The caption goes through
+the same checks as the instruction. A server without pictures still gets one
+drawn from scratch.
+
 - Asked: a ping that asks for a picture ("draw me...", "make a meme of...",
   "show me a picture of...") gets one. wants_image() is a regex, no LLM call.
 - Sometimes: any other ping reply gets one at image_chance (secrets.py,
@@ -65,6 +74,9 @@ HOUR = 60 * 60
 TIMEOUT_S = 10 * 60
 HEALTH_TIMEOUT_S = 5
 ESTIMATE_S = 240  # "painting... (~N min)": 246 s cold, 121 s warm; then follows real runs
+EDIT_ESTIMATE_S = 200  # an edit at SIZE: 195 s live (2026-11-23); then follows real runs
+SOURCE_SIDE = 1024  # a remix source is shrunk to this before it's sent (the result is SIZE anyway)
+CAPTION_BUDGET_S = 20.0
 MAX_PROMPT_WORDS = 40  # hard cap; the writer is asked for 30 so it rarely gets cut
 PROMPT_WORDS_ASKED = 30
 IMAGE_CHECK_TOKENS = 100  # plus llm.THINK_BUDGET for gpt-oss's reasoning
@@ -257,6 +269,35 @@ def parse_response(data) -> bytes:
     return raw
 
 
+def edit_form(prompt: str, image: bytes, size: int = SIZE):
+    """The multipart form for /v1/images/edits: one picture and the instruction."""
+    form = aiohttp.FormData()
+    form.add_field("model", MODEL)
+    form.add_field("prompt", prompt)
+    form.add_field("n", "1")
+    form.add_field("size", f"{size}x{size}")  # the area; the service keeps the picture's shape
+    form.add_field("image", image, filename="source.png", content_type="image/png")
+    return form
+
+
+def source_png(data: bytes, max_side: int = SOURCE_SIDE) -> bytes:
+    """A remix source as a PNG no bigger than max_side on its long side."""
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            if im.width * im.height > MAX_PIXELS * 4:
+                raise ImageError(f"source too large ({im.width}x{im.height})")
+            im.seek(0)  # a GIF's first frame
+            rgb = im.convert("RGB")
+    except ImageError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - Pillow raises many kinds for bad data
+        raise ImageError(f"unreadable source ({type(exc).__name__})") from exc
+    rgb.thumbnail((max_side, max_side))
+    out = io.BytesIO()
+    rgb.save(out, "PNG", optimize=True)
+    return out.getvalue()
+
+
 class ImageClient:
     def __init__(self, base_url: str, timeout_s: float = TIMEOUT_S, size: int = SIZE):
         self.base_url = base_url.rstrip("/")
@@ -276,11 +317,18 @@ class ImageClient:
             raise ImageError(f"unreachable ({type(exc).__name__})") from exc
 
     async def generate(self, session: aiohttp.ClientSession, prompt: str) -> bytes:
+        return await self._post(session, "/v1/images/generations", json=build_request(prompt, self.size))
+
+    async def edit(self, session: aiohttp.ClientSession, prompt: str, image: bytes) -> bytes:
+        """The picture changed as the instruction says (a remix; see the module docstring)."""
+        return await self._post(session, "/v1/images/edits", data=edit_form(prompt, image, self.size))
+
+    async def _post(self, session: aiohttp.ClientSession, path: str, **body) -> bytes:
         try:
             async with session.post(
-                f"{self.base_url}/v1/images/generations",
-                json=build_request(prompt, self.size),
+                f"{self.base_url}{path}",
                 timeout=aiohttp.ClientTimeout(total=self.timeout_s),
+                **body,
             ) as resp:
                 if resp.status in (429, 503):
                     raise ImageBusy(f"HTTP {resp.status}")
@@ -352,6 +400,23 @@ EXTRA_NOTE = (
     "reply as literally and absurdly as possible."
 )
 
+# Remixes: the instruction for an edit of a picture from the server's history.
+EDIT_SYSTEM = (
+    "You write instructions for an image editor. It gets a picture someone posted in this group "
+    "chat and changes it the way you say. Write ONE specific, funny change: put something absurd "
+    "in it, swap what's in it, move it somewhere ridiculous, or redo it in a named style (oil "
+    "painting, 90s clip art, crayon drawing, movie poster...). Keep it PG-13 and funny: crude, "
+    "gross-out and cursed are fine, but no nudity, sex, gore or hate, and never make a real person "
+    f"look sexy. One sentence of at most {PROMPT_WORDS_ASKED} words, starting with a verb: no "
+    "quotes, no explanation, no slurs. Reply with the instruction only."
+)
+EDIT_ASKED_NOTE = "Someone asked for a picture. Change this picture so it shows what they asked for, with one silly twist."
+EDIT_EXTRA_NOTE = (
+    f"Nobody asked for a picture. Change this one to illustrate {persona.BOT_NAME}'s last reply "
+    "as literally and absurdly as possible."
+)
+NO_CAPTION = "(no description)"
+
 # The image check: like safety's reply check, but for a picture and with the
 # owner's line (2026-11-19): "mostly SFW except where it's funny". The model
 # names a label instead of saying OK or BLOCK: on 14 test prompts the
@@ -387,7 +452,8 @@ EXPLICIT_RE = re.compile(
 
 def prompt_texts() -> tuple[str, ...]:
     """This module's instructions, for the prompt-leak check."""
-    return (PROMPT_SYSTEM, ASKED_NOTE, EXTRA_NOTE, IMAGE_CHECK_TEMPLATE)
+    return (PROMPT_SYSTEM, ASKED_NOTE, EXTRA_NOTE, IMAGE_CHECK_TEMPLATE, EDIT_SYSTEM, EDIT_ASKED_NOTE,
+            EDIT_EXTRA_NOTE)
 
 
 def build_image_check_messages(prompt: str) -> list[dict]:
@@ -433,6 +499,21 @@ def build_prompt_messages(lines: list[persona.Line], asked: bool) -> list[dict]:
     ]
 
 
+def build_edit_messages(lines: list[persona.Line], asked: bool, caption: str | None) -> list[dict]:
+    transcript = "\n".join(persona.transcript_lines(lines[-(PROMPT_CONTEXT + 1):]))
+    note = EDIT_ASKED_NOTE if asked else EDIT_EXTRA_NOTE
+    shows = persona.truncate(" ".join((caption or NO_CAPTION).split()), MAX_PROMPT_CHARS)
+    return [
+        {"role": "system", "content": EDIT_SYSTEM},
+        {"role": "user", "content": f"<chat>\n{transcript}\n</chat>\nThe picture shows: {shows}\n{note}"},
+    ]
+
+
+def checked_text(instruction: str, caption: str | None) -> str:
+    """What the checks judge for a remix: the change and what the picture already shows."""
+    return f"{instruction} (in a picture that shows: {caption})" if caption else instruction
+
+
 _PROMPT_LABEL = re.compile(r"^\s*\**(?:image\s+)?prompt\**\s*:\**\s*", re.IGNORECASE)
 _FIRST_SENTENCE = re.compile(r"^.*?[.!?](?=\s|$)")
 
@@ -475,6 +556,11 @@ async def prompt_verdict(prompt: str, check) -> str | None:
     if not await check(prompt):
         return "image check"
     return None
+
+
+def fallback_edit(request: str) -> str:
+    """An asked-for remix when the instruction writer comes back empty: the request itself."""
+    return tidy_prompt(f"Change this picture to show: {request}")
 
 
 def fallback_prompt(request: str) -> str:
@@ -566,6 +652,7 @@ class Images:
         self.gate = gate or ImageGate(chance)
         self.client = client or ImageClient(url)
         self.estimate_s = float(ESTIMATE_S)
+        self.edit_estimate_s = float(EDIT_ESTIMATE_S)
 
     def asked(self, message, bot_id: int | None) -> bool:
         """Does this ping ask for a picture? Then it's the whole reply (no text reply)."""
@@ -613,6 +700,27 @@ class Images:
                 pass
             return "unexpected error"
 
+    async def _source(self, bot, message) -> bytes | None:
+        """One of the server's own pictures to remix, as a PNG, or None (draw from scratch)."""
+        pick = getattr(bot, "remix_source", None)
+        if pick is None:
+            return None
+        try:
+            data = await pick(message)
+            return None if data is None else await asyncio.to_thread(source_png, data)
+        except Exception as exc:  # noqa: BLE001 - no source: draw from scratch
+            log.info("image: no remix source (%s); drawing from scratch", type(exc).__name__)
+            return None
+
+    async def _caption(self, bot, source: bytes) -> str | None:
+        describe = getattr(bot, "describe_picture", None)
+        if describe is None:
+            return None
+        try:
+            return await describe(source)
+        except Exception:  # noqa: BLE001 - an uncaptioned remix still works
+            return None
+
     def _skip(self, reason: str, asked: bool) -> str:
         log.info("image skipped (%s): %s", "asked" if asked else "random", reason)
         return reason
@@ -639,19 +747,30 @@ class Images:
         if problem:
             canned = BROKEN_LINES if problem == "service unreachable" else BUSY_LINES
             return await self._decline(out, asked, problem, canned)
+        # A remix of one of the server's own pictures when it has any; else from scratch.
+        source = await self._source(bot, message)
         if asked:  # right away, so the asker sees it's happening; edited later
-            await out.say(PAINTING_LINE.format(minutes=minutes(self.estimate_s)))
+            estimate = self.edit_estimate_s if source is not None else self.estimate_s
+            await out.say(PAINTING_LINE.format(minutes=minutes(estimate)))
 
         context = list(lines[-PROMPT_CONTEXT:])
         if reply_text is not None:
             context.append(persona.Line(persona.BOT_NAME, reply_text, True))
         started = time.monotonic()
-        prompt = tidy_prompt(await bot.generate(build_prompt_messages(context, asked), canned_errors=False))
-        log.info("image: prompt of %d words in %.1fs", len(prompt.split()), time.monotonic() - started)
+        caption = None
+        if source is not None:
+            caption = await self._caption(bot, source)
+            messages = build_edit_messages(context, asked, caption)
+        else:
+            messages = build_prompt_messages(context, asked)
+        prompt = tidy_prompt(await bot.generate(messages, canned_errors=False))
+        log.info("image: %s of %d words in %.1fs", "remix instruction" if source is not None else "prompt",
+                 len(prompt.split()), time.monotonic() - started)
         if not prompt and asked:
-            prompt = fallback_prompt(request)
-            log.info("image: the prompt writer came back empty; drawing the request")
-        verdict = await prompt_verdict(prompt, lambda p: image_check(bot, p))
+            prompt = fallback_edit(request) if source is not None else fallback_prompt(request)
+            log.info("image: the prompt writer came back empty; using the request")
+        verdict = await prompt_verdict(checked_text(prompt, caption) if prompt else prompt,
+                                       lambda p: image_check(bot, p))
         if verdict:
             canned = {"empty prompt": BROKEN_LINES, "prompt leak": HELD_LINES}
             return await self._decline(out, asked, verdict, canned.get(verdict, REFUSED_LINES))
@@ -664,7 +783,10 @@ class Images:
         job_started = self.gate.clock()
         t0 = time.monotonic()
         try:
-            raw = await self.client.generate(bot.http_session, prompt)
+            if source is not None:
+                raw = await self.client.edit(bot.http_session, prompt, source)
+            else:
+                raw = await self.client.generate(bot.http_session, prompt)
         except ImageBusy as exc:
             return await self._decline(out, asked, f"service refused ({exc})", BUSY_LINES)
         except ImageError as exc:
@@ -673,7 +795,10 @@ class Images:
             return await self._decline(out, asked, "generation failed", BROKEN_LINES)
         self.gate.charge(message.author.id, job_started)
         seconds = time.monotonic() - t0
-        self.estimate_s = 0.7 * self.estimate_s + 0.3 * seconds
+        if source is not None:
+            self.edit_estimate_s = 0.7 * self.edit_estimate_s + 0.3 * seconds
+        else:
+            self.estimate_s = 0.7 * self.estimate_s + 0.3 * seconds
         try:
             data, ext = await asyncio.to_thread(compress, raw)
         except ImageError as exc:
@@ -682,9 +807,10 @@ class Images:
         filename = f"{persona.BOT_NAME.lower()}.{ext}"
         sent = await out.picture(data, filename)
         log.info(
-            "image %s (%s): %.0fs to draw, %d KB png -> %d KB %s; %d this hour",
+            "image %s (%s, %s): %.0fs to draw, %d KB png -> %d KB %s; %d this hour",
             "posted" if sent else "NOT posted",
             "asked" if asked else "random",
+            "remix" if source is not None else "from scratch",
             seconds,
             len(raw) // 1024,
             len(data) // 1024,

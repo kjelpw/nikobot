@@ -425,6 +425,13 @@ class FakeClient:
             raise self.error
         return self.result
 
+    async def edit(self, session, prompt, image):
+        self.edits = getattr(self, "edits", [])
+        self.edits.append((prompt, image))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
 
 class FakeBot:
     def __init__(self, prompt="A goose in a tuxedo arguing with a toaster, oil painting.", check="FINE"):
@@ -618,7 +625,7 @@ def test_logs_never_carry_the_prompt_or_chat_text(caplog):
     caplog.set_level(logging.DEBUG, logger="nikobot")
     fake = FakeBot(prompt="A zorblax wizard melting into custard, crayon drawing.")
     follow("draw me a quixotic wombat", fake=fake)
-    assert "image posted (asked)" in caplog.text
+    assert "image posted (asked, from scratch)" in caplog.text
     for secret in ("zorblax", "custard", "quixotic", "wombat"):
         assert secret not in caplog.text
 
@@ -674,3 +681,104 @@ def test_an_empty_prompt_draws_the_request_itself():
     assert result == "posted" and client.prompts == ["A goofy cartoon: draw me a goose doing its taxes"]
     result, fake, client, _ = follow("hello", fake=FakeBot(prompt=""))  # a random extra just skips
     assert result == "empty prompt" and client.prompts == []
+
+
+
+# --- remixed pictures (the owner, 2026-11-23: "nikobots images should be remixed images instead") ----
+
+class RemixBot(FakeBot):
+    def __init__(self, source=None, caption="a grey cat on a sofa", **kw):
+        super().__init__(prompt="Put a tiny cowboy hat on the cat.", **kw)
+        self.source = make_png((800, 600)) if source is None else source
+        self.caption = caption
+        self.prompt_messages = []
+        self.checked = []
+
+        async def chat(messages, num_predict, temperature):
+            self.checked.append(messages[-1]["content"])
+            return SimpleNamespace(text=self.check, truncated=False)
+
+        self.llm = SimpleNamespace(chat=chat)
+
+    async def remix_source(self, message):
+        if isinstance(self.source, Exception):
+            raise self.source
+        return self.source or None
+
+    async def describe_picture(self, data):
+        assert data[:8] == b"\x89PNG\r\n\x1a\n"  # the shrunk source
+        return self.caption
+
+    async def generate(self, messages, canned_errors=True):
+        self.prompt_messages.append(messages)
+        return await super().generate(messages, canned_errors)
+
+
+def test_a_picture_is_a_remix_of_a_server_picture_when_there_is_one():
+    fake, client = RemixBot(), FakeClient()
+    result, fake, client, images = follow("draw me a cowboy", fake=fake, client=client)
+    assert result == "posted" and client.prompts == []  # nothing drawn from scratch
+    (instruction, png), = client.edits
+    assert instruction == "Put a tiny cowboy hat on the cat."
+    with Image.open(io.BytesIO(png)) as im:
+        assert im.format == "PNG" and max(im.size) <= imagine.SOURCE_SIDE
+    system, user = fake.prompt_messages[0]
+    assert system["content"] == imagine.EDIT_SYSTEM
+    assert "The picture shows: a grey cat on a sofa" in user["content"] and imagine.EDIT_ASKED_NOTE in user["content"]
+    # the check sees the change and what the picture already shows
+    assert "a grey cat on a sofa" in fake.checked[0] and "cowboy hat" in fake.checked[0]
+    assert fake.sent[0] == ("text", imagine.PAINTING_LINE.format(minutes=imagine.minutes(imagine.EDIT_ESTIMATE_S)))
+
+
+def test_random_extras_are_remixes_too():
+    result, fake, client, _ = follow("what's up", fake=RemixBot(), reply="cats rule")
+    assert result == "posted" and len(client.edits) == 1
+    assert imagine.EDIT_EXTRA_NOTE in fake.prompt_messages[0][1]["content"]
+
+
+def test_no_server_picture_means_drawn_from_scratch():
+    for source in (b"", RuntimeError("discord down"), b"not a picture"):
+        result, fake, client, _ = follow("draw me a goose", fake=RemixBot(source=source))
+        assert result == "posted" and len(client.prompts) == 1 and not getattr(client, "edits", [])
+
+
+def test_a_picture_that_already_looks_explicit_isnt_remixed():
+    result, fake, client, _ = follow("draw me a goose", fake=RemixBot(caption="a naked man on a beach"))
+    assert result == "explicit words" and not getattr(client, "edits", [])
+
+
+def test_no_caption_still_remixes():
+    result, fake, client, _ = follow("draw me a goose", fake=RemixBot(caption=None))
+    assert result == "posted" and imagine.NO_CAPTION in fake.prompt_messages[0][1]["content"]
+
+
+def test_edit_form_and_source_png():
+    form = imagine.edit_form("make it snowy", b"PNG", 512)
+    fields = {f[0]["name"]: f for f in form._fields}
+    assert set(fields) == {"model", "prompt", "n", "size", "image"}
+    assert fields["model"][2] == imagine.MODEL and fields["size"][2] == "512x512"
+    assert fields["image"][0]["filename"] == "source.png"
+    with Image.open(io.BytesIO(imagine.source_png(make_png((3000, 1500))))) as im:
+        assert im.size == (1024, 512)
+    with pytest.raises(imagine.ImageError):
+        imagine.source_png(b"junk")
+
+
+def test_client_edit_posts_multipart():
+    png = make_png((32, 32))
+
+    async def handler(request):
+        form = await request.post()
+        assert form["prompt"] == "make it snowy" and form["model"] == imagine.MODEL
+        assert form["image"].file.read() == b"SRC"
+        return web.json_response({"data": [{"b64_json": base64.b64encode(png).decode()}]})
+
+    got = _serve([("POST", "/v1/images/edits", handler)], lambda c, s: c.edit(s, "make it snowy", b"SRC"))
+    assert got == png
+
+
+def test_remix_logs_never_carry_the_caption_or_instruction(caplog):
+    caplog.set_level(logging.INFO)
+    follow("draw me a cowboy", fake=RemixBot(caption="zorblax the cat"))
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "zorblax" not in text and "cowboy" not in text and "remix" in text

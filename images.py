@@ -509,6 +509,25 @@ class Captioner:
             )
         return out
 
+    async def describe_bytes(self, data: bytes, budget: float = BUDGET_S) -> str | None:
+        """A caption for one picture already in hand (imagine.py's remix source), or None.
+
+        Same lock, same never-load rule, within `budget` seconds; never raises.
+        """
+        deadline = time.monotonic() + max(0.0, budget)
+        try:
+            if not await self._ready(deadline):
+                return None
+
+            async def run() -> str | None:
+                async with self.lock:
+                    image = await asyncio.to_thread(jpeg_base64, data)
+                    return clean_caption(await self.describe(image))
+
+            return await asyncio.wait_for(run(), max(0.1, deadline - time.monotonic()))
+        except Exception:  # noqa: BLE001 - no caption is fine; a remix just knows less
+            return None
+
     async def _ready(self, deadline: float) -> bool:
         try:
             return bool(await asyncio.wait_for(self.ready(), max(0.1, min(5.0, deadline - time.monotonic()))))
