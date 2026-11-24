@@ -782,3 +782,40 @@ def test_remix_logs_never_carry_the_caption_or_instruction(caplog):
     follow("draw me a cowboy", fake=RemixBot(caption="zorblax the cat"))
     text = " ".join(r.getMessage() for r in caplog.records)
     assert "zorblax" not in text and "cowboy" not in text and "remix" in text
+
+
+
+# --- an ask waits for the bot's own job (live 2026-11-23: "booked solid" behind a random extra) ----
+
+def test_an_ask_waits_for_the_job_in_progress_and_random_extras_dont_jump_it():
+    async def main():
+        gate = ImageGate(1.0, rng=Dice(0.0), clock=Clock())
+        assert gate.begin(1, asked=False).ok  # a random extra is drawing
+        waiter = asyncio.create_task(gate.wait_turn(5))
+        await asyncio.sleep(0)
+        assert gate.queued
+        assert gate.begin(2, asked=False).reason == "another image is in progress"  # no jumping
+        assert await gate.wait_turn(5) is False  # one waiter at a time
+        gate.end()
+        assert await waiter is True and not gate.queued
+        assert gate.begin(3, asked=True).ok
+        gate.end()
+        gate.begin(4, asked=True)
+        assert await gate.wait_turn(0.05) is False  # never freed in time
+    asyncio.run(main())
+
+
+def test_a_queued_ask_says_so_then_paints():
+    fake, client = FakeBot(), FakeClient()
+    images = imagine.Images(URL, 0.05, gate=ImageGate(0.05, rng=Dice(0.0), clock=Clock()), client=client)
+
+    async def main():
+        assert images.gate.begin(PAL + 1, asked=False).ok  # someone else's random extra is running
+        task = asyncio.create_task(images.follow_up(fake, message("draw me a goose"), [persona.Line("Pal", "x")], None))
+        await asyncio.sleep(0.01)
+        images.gate.end()
+        return await task
+
+    assert asyncio.run(main()) == "posted"
+    assert fake.sent[0][1].startswith("🎨 next in line")
+    assert any(kind == "file" for kind, *_ in fake.sent)
