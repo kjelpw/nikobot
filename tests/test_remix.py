@@ -422,3 +422,31 @@ def test_remix_replies_only_have_a_spam_guard_and_crisis_comes_first():
     assert src.index("safety.is_crisis(trigger.text)") < src.index("cooldown.allow(")
     assert "(self.remix_cooldown, REMIX_COOLDOWN_S) if remixing else (self.cooldown, CHAT_COOLDOWN_S)" in src
     assert src.index("cooldown.allow(") < src.index("self.remix_reply(") < src.index("self.generate(prompt")
+
+
+# --- never the ping back (live 2026-11-23: "how do I get hacks in gta" -> itself) ----
+
+def test_echoes():
+    assert remix.echoes("how do I get hacks in gta", "how do I get hacks in gta")
+    assert remix.echoes("How do i get HACKS in GTA?", "how do I get hacks in gta")
+    assert remix.echoes("lol how do I get hacks in gta 5", "how do I get hacks in gta")
+    assert remix.echoes("get gta hacks", "how do I get hacks in gta")  # the same meaning words
+    assert not remix.echoes("i got banned in gta for hacks lmao", "how do I get hacks in gta")
+    assert not remix.echoes("pizza", "how do I get hacks in gta")
+    assert not remix.echoes("", "hi") and not remix.echoes("hi", None)
+
+
+def test_a_ping_is_never_answered_with_itself(monkeypatch):
+    monkeypatch.setattr(remix, "MIN_LINES", 5)
+    lines = SENSE + ["how do I get hacks in gta", "gta hacks are cringe", "i got banned in gta once"]
+    built = remix.Remix.build([rec(i, t) for i, t in enumerate(lines)], HOME)
+    rng = random.Random(16)
+    for _ in range(300):
+        r = built.reply("how do I get hacks in gta", rng, reactions=False)
+        assert not remix.echoes(r.text, "how do I get hacks in gta"), r.text
+
+
+def test_a_ping_isnt_added_to_the_live_remix():
+    src = inspect.getsource(bot.Nikobot.remember)
+    assert "history.append(" in src and "not self.addressed(message)" in src
+    assert src.index("history.append(") < src.index("not self.addressed(message)")

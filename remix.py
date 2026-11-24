@@ -58,6 +58,10 @@ SMOOTH_WEIGHT = 0.7  # per two-word join
 SPLICE_COST = 0.4  # per jump past the first
 LONG_WORDS = 20  # longer than this costs a little
 JOIN_LOOKS = 12  # lines looked at for a two-word join at each jump
+# Never the ping back (live 2026-11-23: "how do I get hacks in gta" was answered
+# with itself): not the same words, not a near-copy of them.
+ECHO_SIMILARITY = 0.75  # shared meaning words / all meaning words, at or above: an echo
+ECHO_MIN_CHARS = 12  # a ping this long found inside a reply (or the reverse) is an echo
 # Emoji reactions (bot.maybe_react, the owner 2026-11-23: "it should also
 # sometimes react to messages ... a separate roll"): the server's own emoji,
 # preferring ones used next to the message's words.
@@ -265,7 +269,8 @@ class Remix:
         return Reply("stitch", text=text) if text else Reply("replay", text=self.replay(None, rng, ping))
 
     def replay(self, topic: str | None, rng, ping: str | None = None) -> str | None:
-        """A short real line, drawn with a lean toward ones that share words with the ping."""
+        """A short real line, drawn with a lean toward ones that share words with the ping
+        (never one that echoes it)."""
         if not self.short:
             return None
         wanted = content_words(ping)
@@ -277,7 +282,9 @@ class Remix:
                 if len(self.lines[i].split()) <= SHORT_WORDS:
                     pool.add(i)
         pool.update(self.short[rng.randrange(len(self.short))] for _ in range(CANDIDATES))
-        ids = sorted(pool)
+        ids = [i for i in sorted(pool) if not echoes(self.lines[i], ping)]
+        if not ids:
+            return None
         weights = [math.exp(RELEVANCE_WEIGHT * min(3, len(content_words(self.lines[i]) & wanted))) for i in ids]
         return self.lines[rng.choices(ids, weights)[0]]
 
@@ -285,7 +292,8 @@ class Remix:
         """A line that jumps into other lines at shared words, drawn from a few with a lean
         toward ones that share words with the ping and join smoothly. None if none jumped."""
         wanted = content_words(ping)
-        found = [c for c in (self._stitch_once(topic, rng) for _ in range(CANDIDATES)) if c is not None]
+        found = [c for c in (self._stitch_once(topic, rng) for _ in range(CANDIDATES))
+                 if c is not None and not echoes(c[0], ping)]
         if not found:
             return None
         weights = [math.exp(self._score(text, smooth, jumps, wanted)) for text, smooth, jumps in found]
@@ -368,6 +376,21 @@ class Remix:
         pool = near if near and rng.random() < RELATED_EMOJI_SHARE else Counter(dict(self.emoji.most_common(TOP_EMOJI)))
         emoji = sorted(pool)
         return rng.choices(emoji, [pool[e] for e in emoji])[0]
+
+
+def _plain(text: str | None) -> str:
+    return " ".join(k for k in (key(t) for t in (text or "").split()) if k)
+
+
+def echoes(text: str | None, ping: str | None) -> bool:
+    """Is this reply the ping said back: the same words, a near-copy, or one inside the other?"""
+    a, b = _plain(text), _plain(ping)
+    if not a or not b:
+        return False
+    if a == b or (min(len(a), len(b)) >= ECHO_MIN_CHARS and (a in b or b in a)):
+        return True
+    ca, cb = content_words(text), content_words(ping)
+    return bool(ca and cb) and len(ca & cb) / len(ca | cb) >= ECHO_SIMILARITY
 
 
 def content_words(text: str | None) -> set[str]:

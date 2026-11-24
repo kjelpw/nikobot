@@ -1020,7 +1020,10 @@ class Nikobot(commands.Bot):
                 return
             history.append(history.corpus_path(DATA_DIR, guild.id), [rec])
             current = self.remixes.get(guild.id)
-            if current is not None:
+            # A ping to the bot isn't added live: it would be the best match for its
+            # own reply (live 2026-11-23, a ping answered with itself). It's in the
+            # file, so a later restart picks it up like any other line.
+            if current is not None and not self.addressed(message):
                 # people's names only: a mention of a bot (this one, mostly) is dropped
                 current.add(rec, {u.id: u.display_name for u in message.mentions if not u.bot}, nsfw_ok)
         except Exception as exc:  # noqa: BLE001 - this must never break the bot
