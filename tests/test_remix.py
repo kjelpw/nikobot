@@ -41,6 +41,9 @@ def test_clean_line_turns_markup_into_plain_chat():
     assert remix.clean_line("<@!9> who", names) == "who"  # unknown: dropped, never "@someone"
     assert remix.clean_line("@everyone look <#5> <@&6>", names) == "look"
     assert remix.clean_line("nice <:pog:123> https://example.com/x", names) == "nice <:pog:123>"
+    # a real custom emoji has an 18-digit id: not a phone number (live 2026-11-23, every such line was lost)
+    assert remix.clean_line("gg <:pog:123456789012345678>") == "gg <:pog:123456789012345678>"
+    assert remix.clean_line("call me 555 123 4567 <:pog:123456789012345678>") == ""
 
 
 def test_clean_line_drops_what_must_not_be_remixed(monkeypatch):
@@ -272,3 +275,141 @@ def test_lore_keeps_its_public_fence():
     seed = inspect.getsource(bot.Nikobot.seed_lore)
     assert "self.lore_channels(guild_id)" in seed
     assert "lore_channel(channel, guild.default_role, nsfw_ok)" in inspect.getsource(bot.Nikobot.lore_channels)
+
+
+# --- making more sense (the owner, 2026-11-23: "slightly weight the messages towards
+# something that makes more sense rather than just pulling random") ------------------
+
+SENSE = ["the big red truck is mine", "we saw the big dog yesterday", "my truck broke down again",
+         "pizza is the best food", "the dog ate my homework", "i love the big city lights",
+         "cats are better than dogs honestly", "who wants pizza tonight", "the city is so loud",
+         "red is a great color", "my homework is due tomorrow", "that game was so good",
+         "dogs are loud at night", "the game tonight is gonna be wild", "big if true"]
+
+
+@pytest.fixture
+def sense(monkeypatch):
+    monkeypatch.setattr(remix, "MIN_LINES", 5)
+    return remix.Remix.build([rec(i, t) for i, t in enumerate(SENSE)], HOME)
+
+
+def test_content_words_skip_stopwords_and_short_words():
+    assert remix.content_words("Is the PIZZA good, or what?") == {"pizza", "good"}
+    assert remix.content_words(None) == set()
+
+
+def test_replies_lean_toward_the_ping_but_stay_random(sense):
+    def share(ping, n=300):
+        rng = random.Random(12)
+        texts = [sense.stitch(None, rng, ping) for _ in range(n)]
+        return sum("truck" in t for t in texts) / n, len(set(texts))
+    leaned, variety = share("is my truck ok")
+    baseline, _ = share(None)
+    assert leaned > baseline + 0.1  # weighted toward the ping...
+    assert variety > 20  # ...but still a draw, not one fixed answer
+
+
+def test_replays_lean_toward_the_ping(sense):
+    rng = random.Random(13)
+    picks = [sense.replay(None, rng, "pizza time") for _ in range(200)]
+    assert sum("pizza" in p for p in picks) > 60 and len(set(picks)) > 3
+
+
+def test_joins_prefer_a_two_word_overlap(sense):
+    rng = random.Random(14)
+    current = "i love the big city lights".split()
+    joins = [sense._join(current, 3, {5}, rng) for _ in range(30)]  # jump at "big", after "the"
+    assert all(j is not None for j in joins)
+    for other, pos, smooth in joins:
+        words = sense.lines[other].split()
+        assert remix.key(words[pos]) == "big"
+        if smooth:
+            assert remix.key(words[pos - 1]) == "the"
+    assert any(smooth for _, _, smooth in joins)
+
+
+# --- emoji reactions (the owner, 2026-11-23: "it should also sometimes react to messages") ---
+
+def test_emoji_pattern():
+    text = "lol 😂 <:pog:123456789012345678> 🇺🇸 👍🏽 👨‍👩‍👧 <a:dance:123456789012345678>"
+    assert remix.EMOJI.findall(text) == ["😂", "<:pog:123456789012345678>", "🇺🇸", "👍🏽", "👨‍👩‍👧",
+                                         "<a:dance:123456789012345678>"]
+
+
+def test_react_emoji_leans_toward_emoji_used_next_to_the_words(monkeypatch):
+    monkeypatch.setattr(remix, "MIN_LINES", 1)
+    lines = [rec(1, "pizza time 🍕"), rec(2, "more pizza 🍕🍕"), rec(3, "that game was wild 😂"),
+             rec(4, "lmao 😂"), rec(5, "no emoji here")]
+    built = remix.Remix.build(lines, HOME)
+    assert built.emoji["🍕"] == 2 and built.emoji["😂"] == 2  # once per line
+    rng = random.Random(15)
+    picks = [built.react_emoji("who wants pizza", rng) for _ in range(200)]
+    assert picks.count("🍕") > 150  # related ones mostly, the server's favourites sometimes
+    assert set(picks) <= {"🍕", "😂"}
+    assert remix.Remix(HOME).react_emoji("hi", rng) is None
+
+
+def test_react_config():
+    cfg = lambda **kw: SimpleNamespace(**kw)  # noqa: E731
+    assert bot.react_config(cfg()) == (0.0, "no react_chance")
+    assert bot.react_config(cfg(react_chance=0.03)) == (0.03, "ok")
+    assert bot.react_config(cfg(react_chance=0)) == (0.0, "react_chance is 0")
+    assert bot.react_config(cfg(react_chance=0.9))[0] == 0.0
+    assert bot.react_config(cfg(react_chance="lots")) == (0.0, "react_chance isn't a number")
+
+
+def _react_bot(current, chance=1.0):
+    return SimpleNamespace(react_chance=chance, remix_here=lambda gid: current if gid == HOME else None,
+                           react_last={})
+
+
+def _react_msg(text, emojis=(), channel=5):
+    added = []
+
+    async def add_reaction(e):
+        added.append(e)
+    return SimpleNamespace(guild=SimpleNamespace(id=HOME, emojis=list(emojis)), channel=SimpleNamespace(id=channel),
+                           content=text, add_reaction=add_reaction), added
+
+
+def test_reactions_are_their_own_roll_with_a_cooldown_and_skip_serious(monkeypatch):
+    import asyncio
+    monkeypatch.setattr(remix, "MIN_LINES", 1)
+    current = remix.Remix.build([rec(1, "pizza 🍕"), rec(2, "ok <:pog:123456789012345678>")], HOME)
+    nb = _react_bot(current)
+    msg, added = _react_msg("pizza night")
+    asyncio.run(bot.Nikobot.maybe_react(nb, msg))
+    assert added and added[0] in ("🍕",) or isinstance(added[0], SimpleNamespace)
+    again, more = _react_msg("pizza again")
+    asyncio.run(bot.Nikobot.maybe_react(nb, again))
+    assert more == []  # one per channel per cooldown
+    sad, none = _react_msg("my grandma died in the hospital", channel=6)
+    asyncio.run(bot.Nikobot.maybe_react(nb, sad))
+    assert none == []  # never on serious news
+    off, nothing = _react_msg("pizza", channel=7)
+    asyncio.run(bot.Nikobot.maybe_react(_react_bot(current, chance=0.0), off))
+    assert nothing == []
+
+
+def test_a_custom_emoji_is_only_used_if_the_server_still_has_it(monkeypatch):
+    import asyncio
+    monkeypatch.setattr(remix, "MIN_LINES", 1)
+    current = remix.Remix.build([rec(1, "gg <:pog:123456789012345678>")], HOME)
+    gone, added = _react_msg("gg")
+    asyncio.run(bot.Nikobot.maybe_react(_react_bot(current), gone))
+    assert added == []  # its only emoji is gone from the server
+    pog = SimpleNamespace(id=123456789012345678, available=True)
+    here, added = _react_msg("gg", emojis=[pog])
+    asyncio.run(bot.Nikobot.maybe_react(_react_bot(current), here))
+    assert added == [pog]
+
+
+def test_every_message_gets_the_reaction_roll_before_any_reply():
+    src = inspect.getsource(bot.Nikobot.on_message)
+    assert src.index("self.process_commands(message)") < src.index("self.maybe_react(message)") < src.index("self.chat(message)")
+
+
+def test_wordle_grids_dont_make_squares_the_favourite_emoji(monkeypatch):
+    monkeypatch.setattr(remix, "MIN_LINES", 1)
+    built = remix.Remix.build([rec(1, "wordle 3/6 🟩🟩🟨⬛🟩"), rec(2, "😂😂😂 lol")], HOME)
+    assert dict(built.emoji) == {"😂": 1}  # once per line, no grid squares

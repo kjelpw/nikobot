@@ -30,9 +30,11 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import string
 from array import array
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,7 +46,23 @@ log = logging.getLogger("nikobot.remix")
 # --- the mix (stitch takes the rest) -----------------------------------------------
 REPLAY_SHARE = 0.28
 REACTION_SHARE = 0.12
-TOPIC_SHARE = 0.5  # how often a reply starts from a word in the ping, when it can
+TOPIC_SHARE = 0.7  # how often a reply starts from a word in the ping, when it can
+# "Slightly weight the messages towards something that makes more sense rather
+# than just pulling random" (the owner, 2026-11-23): a few candidates are made
+# and one is drawn with weight exp(score), the score counting words shared with
+# the ping and smooth joins (two words overlap where it jumps). Still a draw,
+# never the single best.
+CANDIDATES = 6
+RELEVANCE_WEIGHT = 1.0  # per word shared with the ping (at most 3 count)
+SMOOTH_WEIGHT = 0.7  # per two-word join
+SPLICE_COST = 0.4  # per jump past the first
+LONG_WORDS = 20  # longer than this costs a little
+JOIN_LOOKS = 12  # lines looked at for a two-word join at each jump
+# Emoji reactions (bot.maybe_react, the owner 2026-11-23: "it should also
+# sometimes react to messages ... a separate roll"): the server's own emoji,
+# preferring ones used next to the message's words.
+RELATED_EMOJI_SHARE = 0.7
+TOP_EMOJI = 15
 
 # --- sizes ----------------------------------------------------------------------------
 MAX_LINES = 60_000  # most recent usable lines kept per server
@@ -73,8 +91,14 @@ _GIF_LINK = re.compile(
 _COMMAND = re.compile(r"^\s*[!/$?;+\-.]\w")
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.]+\b")
 _PHONE = re.compile(r"\d[\d\s().-]{7,}\d")  # 9+ digits-ish: phone numbers, IDs, card numbers
+GRID_SQUARES = frozenset(chr(c) for c in range(0x1F7E0, 0x1F7EC)) | {"⬛", "⬜"}
+_CUSTOM_EMOJI_CODE = re.compile(r"<a?:\w{2,32}:\d{15,21}>")
 _IMAGE_URL = re.compile(r"\.(?:png|jpe?g|gif|webp)(?:\?|$)", re.IGNORECASE)
 _SPACES = re.compile(r"\s+")
+_EMOJI_PART = r"[\u2600-\u27BF\U0001F300-\U0001FAFF][\uFE0F\U0001F3FB-\U0001F3FF]?"
+EMOJI = re.compile(
+    rf"<a?:\w{{2,32}}:\d{{15,21}}>|[\U0001F1E6-\U0001F1FF]{{2}}|{_EMOJI_PART}(?:\u200D{_EMOJI_PART})*"
+)
 _PUNCT = string.punctuation + "“”‘’…"
 _STOP = frozenset(
     "a an the i im i'm me my you your u ur he she it its it's we they them is are was were be been am do does did "
@@ -106,7 +130,8 @@ def clean_line(content: str | None, names: dict[int, str] | None = None) -> str:
     text = _OTHER_MENTION.sub("", text)
     text = persona.strip_links(text)
     text = _SPACES.sub(" ", text).strip()
-    if not text or _EMAIL.search(text) or _PHONE.search(text):
+    probe = _CUSTOM_EMOJI_CODE.sub(" ", text)  # a custom emoji's 18-digit id isn't a phone number
+    if not text or _EMAIL.search(probe) or _PHONE.search(probe):
         return ""
     if safety.is_crisis(text) or safety.is_serious([text]) or safety.has_slur(text):
         return ""
@@ -130,6 +155,8 @@ class Remix:
     index: dict[str, array] = field(default_factory=dict)
     short: array = field(default_factory=lambda: array("I"))  # ids of replayable lines
     gifs: list[str] = field(default_factory=list)
+    emoji: Counter = field(default_factory=Counter)  # emoji -> times used in chat
+    emoji_near: dict[str, Counter] = field(default_factory=dict)  # word -> emoji used in its lines
     images: list[tuple[int, int]] = field(default_factory=list)  # (channel, message): remix sources
 
     @property
@@ -143,6 +170,13 @@ class Remix:
             self.index.setdefault(k, array("I")).append(line_id)
         if len(text.split()) <= SHORT_WORDS:
             self.short.append(line_id)
+        # each emoji once per line, and no game-grid squares (Wordle results made 🟩 the
+        # server's "favourite" emoji, 2026-11-23)
+        found = sorted(set(EMOJI.findall(text)) - GRID_SQUARES)
+        if found:
+            self.emoji.update(found)
+            for w in content_words(text):
+                self.emoji_near.setdefault(w, Counter()).update(found)
 
     def add(self, record: dict, names: dict[int, str] | None = None, nsfw_ok: bool = False) -> bool:
         """Take one message record (history.py / the message log format). True if it was used."""
@@ -224,33 +258,70 @@ class Remix:
             return Reply("gif", text=rng.choice(self.gifs))
         topic = self.topic(ping, rng) if rng.random() < TOPIC_SHARE else None
         if roll < REACTION_SHARE + REPLAY_SHARE:
-            text = self.replay(topic, rng)
+            text = self.replay(topic, rng, ping)
             if text:
                 return Reply("replay", text=text)
-        text = self.stitch(topic, rng)
-        return Reply("stitch", text=text) if text else Reply("replay", text=self.replay(None, rng))
+        text = self.stitch(topic, rng, ping)
+        return Reply("stitch", text=text) if text else Reply("replay", text=self.replay(None, rng, ping))
 
-    def replay(self, topic: str | None, rng) -> str | None:
+    def replay(self, topic: str | None, rng, ping: str | None = None) -> str | None:
+        """A short real line, drawn with a lean toward ones that share words with the ping."""
         if not self.short:
             return None
-        if topic is not None:
-            ids = [i for i in self.index.get(topic, ()) if len(self.lines[i].split()) <= SHORT_WORDS]
-            if ids:
-                return self.lines[rng.choice(ids)]
-        return self.lines[rng.choice(self.short)]
+        wanted = content_words(ping)
+        pool: set[int] = set()
+        for w in ([topic] if topic else []) + sorted(wanted):
+            ids = self.index.get(w, ())
+            for _ in range(min(len(ids), 8)):
+                i = ids[rng.randrange(len(ids))]
+                if len(self.lines[i].split()) <= SHORT_WORDS:
+                    pool.add(i)
+        pool.update(self.short[rng.randrange(len(self.short))] for _ in range(CANDIDATES))
+        ids = sorted(pool)
+        weights = [math.exp(RELEVANCE_WEIGHT * min(3, len(content_words(self.lines[i]) & wanted))) for i in ids]
+        return self.lines[rng.choices(ids, weights)[0]]
 
-    def _other_line(self, k: str, used: set[int], rng) -> int | None:
+    def stitch(self, topic: str | None, rng, ping: str | None = None) -> str | None:
+        """A line that jumps into other lines at shared words, drawn from a few with a lean
+        toward ones that share words with the ping and join smoothly. None if none jumped."""
+        wanted = content_words(ping)
+        found = [c for c in (self._stitch_once(topic, rng) for _ in range(CANDIDATES)) if c is not None]
+        if not found:
+            return None
+        weights = [math.exp(self._score(text, smooth, jumps, wanted)) for text, smooth, jumps in found]
+        return rng.choices(found, weights)[0][0]
+
+    @staticmethod
+    def _score(text: str, smooth: int, jumps: int, wanted: set[str]) -> float:
+        return (RELEVANCE_WEIGHT * min(3, len(content_words(text) & wanted)) + SMOOTH_WEIGHT * smooth
+                - SPLICE_COST * max(0, jumps - 1) - 0.5 * (len(text.split()) > LONG_WORDS))
+
+    def _join(self, current: list[str], i: int, used: set[int], rng) -> tuple[int, int, bool] | None:
+        """Where to jump from current[i]: (line, position, smooth). Smooth means the word
+        before matches too, so the join reads like a two-word overlap."""
+        k = key(current[i])
         ids = self.index.get(k)
         if not ids or len(ids) < 2:
             return None
-        for _ in range(4):
-            pick = ids[rng.randrange(len(ids))]
-            if pick not in used:
-                return pick
-        return None
+        before = key(current[i - 1]) if i > 0 else None
+        plain = None
+        for _ in range(JOIN_LOOKS):
+            other = ids[rng.randrange(len(ids))]
+            if other in used:
+                continue
+            words = self.lines[other].split()
+            spots = [j for j, t in enumerate(words) if key(t) == k]
+            if not spots:
+                continue
+            smooth = [j for j in spots if j > 0 and key(words[j - 1]) == before]
+            if smooth:
+                return other, rng.choice(smooth), True
+            if plain is None:
+                plain = (other, rng.choice(spots), False)
+        return plain
 
-    def stitch(self, topic: str | None, rng) -> str | None:
-        """A line that jumps into other lines at shared words. None if it never managed a jump."""
+    def _stitch_once(self, topic: str | None, rng) -> tuple[str, int, int] | None:
+        """One stitched line: (text, smooth joins, jumps), or None."""
         for _ in range(TRIES):
             if topic is not None and self.index.get(topic):
                 ids = self.index[topic]
@@ -260,22 +331,20 @@ class Remix:
             words = self.lines[start].split()
             if len(words) < 2:
                 continue
-            used, out, current = {start}, [], words
+            used, out, current, smooth = {start}, [], words, 0
             for _ in range(rng.randint(1, MAX_SPLICES)):
                 cuts = [i for i in range(1, len(current)) if len(self.index.get(key(current[i]), ())) > 1]
                 rng.shuffle(cuts)
                 jumped = False
                 for i in cuts[:4]:
-                    k = key(current[i])
-                    other = self._other_line(k, used, rng)
-                    if other is None:
+                    join = self._join(current, i, used, rng)
+                    if join is None:
                         continue
-                    other_words = self.lines[other].split()
-                    spots = [j for j, t in enumerate(other_words) if key(t) == k]
-                    j = rng.choice(spots)
+                    other, j, was_smooth = join
                     out.extend(current[:i])
-                    current = other_words[j:]
+                    current = self.lines[other].split()[j:]
                     used.add(other)
+                    smooth += was_smooth
                     jumped = True
                     break
                 if not jumped or len(out) >= MAX_WORDS:
@@ -284,8 +353,26 @@ class Remix:
             text = " ".join(_trim(out, MAX_WORDS))
             if len(used) < 2 or any(text == self.lines[u] for u in used):
                 continue  # never jumped, or jumped between copies of one line ("lol", "same")
-            return text
+            return text, smooth, len(used) - 1
         return None
+
+    # --- reactions ----------------------------------------------------------------------
+
+    def react_emoji(self, text: str | None, rng) -> str | None:
+        """An emoji this server uses, leaning toward ones used next to the message's words."""
+        if not self.emoji:
+            return None
+        near = Counter()
+        for w in content_words(text):
+            near.update(self.emoji_near.get(w, {}))
+        pool = near if near and rng.random() < RELATED_EMOJI_SHARE else Counter(dict(self.emoji.most_common(TOP_EMOJI)))
+        emoji = sorted(pool)
+        return rng.choices(emoji, [pool[e] for e in emoji])[0]
+
+
+def content_words(text: str | None) -> set[str]:
+    """The words that carry meaning: indexed form, no stopwords, longer than two letters."""
+    return {k for k in (key(t) for t in (text or "").split()) if len(k) > 2 and k not in _STOP}
 
 
 def _trim(words: list[str], limit: int) -> list[str]:
