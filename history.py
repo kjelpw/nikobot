@@ -9,13 +9,17 @@ far too little for remix.py to stitch from.
   JSON format (bot.message_dict) plus the message id. A server's file is only
   ever written with that server's messages, and every read checks the server
   again, so nothing crosses between servers (the owner, 2026-11-20).
-- Which channels: the same fence as lore (bot.lore_channel): channels everyone
-  in the server can read, NSFW ones only in the servers in lore_nsfw_guilds,
-  never private threads. Bots (this one too) and webhooks are not kept.
-- The backfill runs once, in the background, newest messages first, one
-  channel at a time. Progress is saved per channel in
-  history-<guild id>.state.json, so a restart carries on where it stopped.
-  New messages are appended live (bot.on_message), so it never runs again.
+- Which channels (bot.remix_channel): every channel of that server the bot can
+  read, role-gated and private ones too (the owner, 2026-11-23: "All channels
+  mix"), NSFW ones only in the servers in lore_nsfw_guilds, never private
+  threads. Lore still reads only the public ones (its own channel filter).
+  Bots (this one too) and webhooks are not kept.
+- The backfill runs in the background, newest messages first, one channel at
+  a time. Progress is saved per channel in history-<guild id>.state.json, so
+  a restart carries on where it stopped, and a finished channel is never
+  fetched again; each start only fetches channels it hasn't finished (new
+  ones, or ones the fence newly allows). New messages are appended live
+  (bot.on_message).
 - Logs carry counts only, never content.
 """
 from __future__ import annotations
