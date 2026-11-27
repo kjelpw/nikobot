@@ -24,6 +24,9 @@ Rules this file enforces (the owner's, 2026-11-18):
 - Only in the owner's own servers (the guild IDs in secrets.py). It ignores
   every other server and leaves any new one it gets added to.
 - Never in DMs: a DM gets no reply and never reaches the model.
+- Never active in a channel named nsfw-... or a thread in one (off_limits, the
+  owner 2026-11-27): no replies, reactions, chime-ins, commands or pictures,
+  nothing logged and nothing learned there.
 - The remix voice (remix.py, the owner's pick 2026-11-23, when `remix` is on
   in secrets.py): a ping is answered with that server's own chat stitched
   together, a short line replayed, or a GIF someone posted. Its pictures are
@@ -335,6 +338,21 @@ def channel_nsfw(channel) -> bool:
         return False
 
 
+def off_limits(channel) -> bool:
+    """A channel named nsfw-... (or a thread in one): the bot does nothing there at all.
+
+    The owner, 2026-11-27: "Nikobot shouldn't be in any channels whose name is
+    prefixed with nsfw-", "or at least not active in them". No replies,
+    reactions, chime-ins, commands or pictures, nothing logged, and nothing
+    learned from it, whatever its NSFW flag says.
+    """
+    for ch in (channel, getattr(channel, "parent", None)):
+        name = getattr(ch, "name", None)
+        if isinstance(name, str) and name.strip().lower().startswith("nsfw-"):
+            return True
+    return False
+
+
 def lore_channel(channel, everyone, nsfw_ok: bool = False) -> bool:
     """A channel lore may learn from: readable by everyone in the server, and not
     NSFW unless nsfw_ok (that server is in lore_nsfw_guilds).
@@ -342,7 +360,7 @@ def lore_channel(channel, everyone, nsfw_ok: bool = False) -> bool:
     Lore shows up in every channel (and in !lore), so it must not carry a
     private channel's chat into public ones.
     """
-    if getattr(channel, "type", None) == discord.ChannelType.private_thread:
+    if getattr(channel, "type", None) == discord.ChannelType.private_thread or off_limits(channel):
         return False
     if channel_nsfw(channel) and not nsfw_ok:
         return False
@@ -358,9 +376,10 @@ def remix_channel(channel, me, nsfw_ok: bool = False) -> bool:
     The owner, 2026-11-23, asked which channels: "All channels mix", role-gated
     and private ones included (lore keeps its public-only fence). Still never
     another server's, NSFW ones only in lore_nsfw_guilds (the owner: "nsfw
-    channels in VII are ok, not in other servers"), never a private thread.
+    channels in VII are ok, not in other servers"), never a private thread,
+    never an nsfw-... channel (off_limits).
     """
-    if getattr(channel, "type", None) == discord.ChannelType.private_thread:
+    if getattr(channel, "type", None) == discord.ChannelType.private_thread or off_limits(channel):
         return False
     if channel_nsfw(channel) and not nsfw_ok:
         return False
@@ -1009,6 +1028,8 @@ class Nikobot(commands.Bot):
         log.error("command %s failed: %s", ctx.command, type(error).__name__)
 
     async def on_message(self, message: discord.Message) -> None:
+        if message.guild is not None and off_limits(message.channel):
+            return  # an nsfw-... channel: not logged, not answered, nothing (the owner, 2026-11-27)
         self.record(message)
         if message.guild is None:
             return  # DMs: logged, never answered, never sent to the model

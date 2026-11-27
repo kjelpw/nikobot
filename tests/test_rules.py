@@ -195,3 +195,34 @@ def test_the_bots_own_foreign_slips_leave_the_context():
              persona.Line("Ana", "مرحبا يا جماعة"),  # a person's own message stays
              persona.Line("Niko", "Certainly! Pure synergy.", is_self=True)]
     assert [l.text for l in bot.context_without_serious(lines)] == ["مرحبا يا جماعة", "Certainly! Pure synergy."]
+
+
+
+# --- never in nsfw-... channels (the owner, 2026-11-27) -----------------------------
+
+def test_nsfw_prefixed_channels_are_off_limits():
+    import discord as d
+    assert bot.off_limits(SimpleNamespace(name="nsfw-girls3"))
+    assert bot.off_limits(SimpleNamespace(name="NSFW-Shitposting"))
+    assert bot.off_limits(SimpleNamespace(name="a-thread", parent=SimpleNamespace(name="nsfw-shitposting")))
+    for name in ("general", "shitposting", "not-nsfw-here", "nsfw", "nsfwstuff", None):
+        assert not bot.off_limits(SimpleNamespace(name=name)), name
+    assert not bot.off_limits(SimpleNamespace())  # a DM has no name
+    me = object()
+    ok = SimpleNamespace(view_channel=True, read_message_history=True)
+    ch = SimpleNamespace(name="nsfw-girls3", is_nsfw=lambda: False, type=d.ChannelType.text,
+                         permissions_for=lambda who: ok)
+    assert not bot.remix_channel(ch, me, nsfw_ok=True)  # by name, whatever the flag says
+    assert not bot.lore_channel(ch, me, nsfw_ok=True)
+
+
+def test_nothing_happens_in_an_nsfw_prefixed_channel():
+    import asyncio
+    import inspect
+    calls = []
+    nb = SimpleNamespace(record=lambda m: calls.append("record"))
+    msg = SimpleNamespace(guild=SimpleNamespace(id=1), channel=SimpleNamespace(name="nsfw-girls3"), content="@niko hi")
+    asyncio.run(bot.Nikobot.on_message(nb, msg))
+    assert calls == []  # returned before logging, replying, reacting or chiming
+    src = inspect.getsource(bot.Nikobot.on_message)
+    assert src.index("off_limits(message.channel)") < src.index("self.record(message)")
